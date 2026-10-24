@@ -27,6 +27,7 @@ export class RoomError extends Error {
 }
 
 const now = () => Date.now();
+let backupSeq = 0;
 const DEFAULT_SETTINGS = { leadAwayMinutes: 10, onlineSeconds: 180, commands: 'ask' };
 
 export class Room extends EventEmitter {
@@ -313,7 +314,10 @@ export class Room extends EventEmitter {
 
   _backup(abs, rel, member) {
     if (!fs.existsSync(abs)) return;
-    const dest = path.join(this.historyDir, `${now()}__${(member?.id || 'x').replace(/[^\w-]/g, '')}__${rel.replace(/[/\\]/g, '~')}`);
+    // Timestamp plus a counter: two backups in the same millisecond must not share a name.
+    backupSeq = (backupSeq + 1) % 1_000_000;
+    const stamp = `${now()}-${String(backupSeq).padStart(6, '0')}`;
+    const dest = path.join(this.historyDir, `${stamp}__${(member?.id || 'x').replace(/[^\w-]/g, '')}__${rel.replace(/[/\\]/g, '~')}`);
     fs.copyFileSync(abs, dest);
   }
 
@@ -324,8 +328,8 @@ export class Room extends EventEmitter {
       .sort()
       .reverse()
       .map((f) => {
-        const [ts, by] = f.split('__');
-        return { version: f, saved: new Date(Number(ts)).toISOString(), replaced_by: this._nameOf(by) };
+        const [stamp, by] = f.split('__');
+        return { version: f, saved: new Date(parseInt(stamp, 10)).toISOString(), replaced_by: this._nameOf(by) };
       });
   }
 

@@ -79,6 +79,22 @@ test('file history and restore undo an edit', async () => {
   room.close();
 });
 
+test('restore works even when the edit and the restore happen in the same millisecond', async () => {
+  const { room, members: [a] } = await setup('A');
+  const realNow = Date.now;
+  const frozen = realNow();
+  Date.now = () => frozen;
+  try {
+    await room.call('write_file', a, { path: 'index.js', content: 'broken\n' });
+    await room.call('restore_file', a, { path: 'index.js' });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.match(fs.readFileSync(path.join(room.projectRoot, 'index.js'), 'utf8'), /hello/);
+  assert.equal((await room.call('file_history', a, { path: 'index.js' })).versions.length, 2);
+  room.close();
+});
+
 test('lead away: explicit and detected by silence; members are told to finish and wait', async () => {
   const { room, members: [lead, g] } = await setup('Claude', 'Gemini');
   await room.call('ask', lead, { to: 'Gemini', title: 'Write tests' });
