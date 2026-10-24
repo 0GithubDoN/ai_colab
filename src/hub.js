@@ -11,8 +11,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { Room, RoomError, HUMAN } from './room.js';
 import { createMcpServer } from './mcp.js';
-import { inviteText } from './invite.js';
+import { inviteText, invitePrompt } from './invite.js';
 import { startTunnel } from './tunnel.js';
+import { collectUsage, parseClaudeStatusline } from './usage.js';
+import { avatarSvg } from './avatars.js';
 import { homeDir, hubFile, readJson, writeJson, secret, normalizeCode, DEFAULT_PORT, VERSION } from './util.js';
 
 const DASHBOARD = new URL('../public/dashboard.html', import.meta.url);
@@ -32,6 +34,7 @@ export class Hub {
     this.id = randomUUID();
     this.key = secret(24);
     this.registryFile = path.join(home, 'rooms.json');
+    this.statusline = new Map(); // Claude Code status line reports by session id
   }
 
   log(...args) {
@@ -179,6 +182,9 @@ export class Hub {
     this.port = await this._listen(this.requestedPort);
     writeJson(hubFile(this.home), { app: 'crewroom', version: VERSION, hubId: this.id, key: this.key, port: this.port, pid: process.pid, startedAt: new Date().toISOString() }, { mode: 0o600 });
     this._gc = setInterval(() => this._cleanup(), 10 * 60_000);
+    this._usageTimer = setInterval(() => this.refreshUsage(), 20_000);
+    this._usageTimer.unref();
+    this.refreshUsage();
     this._gc.unref();
     this.log(`Crewroom hub ${VERSION} listening on ${this.localBase} (${this.rooms.size} room(s))`);
     return this;
@@ -210,6 +216,24 @@ export class Hub {
     throw new Error(`No free port found near ${port}.`);
   }
 
+  /** Read token usage from local app logs (usage.js) and attach it to room members. */
+  refreshUsage() {
+    if (process.env.CREWROOM_NO_USAGE === '1') return;
+    const cutoff = Date.now() - 3 * 3600_000;
+    for (const [id, r] of this.statusline) if (r.updatedAt < cutoff) this.statusline.delete(id);
+    for (const room of this.rooms.values()) {
+      if (room.s.settings.readUsage === false) {
+        room.applyUsage([]);
+        continue;
+      }
+      try {
+        room.applyUsage(collectUsage(room.projectRoot, { statusline: [...this.statusline.values()] }));
+      } catch (err) {
+        this.log(`usage read failed for ${room.code}: ${err.message}`);
+      }
+    }
+  }
+
   _cleanup() {
     const cutoff = Date.now() - 2 * 3600_000;
     for (const [sid, s] of this.sessions) {
@@ -223,6 +247,7 @@ export class Hub {
 
   async stop() {
     clearInterval(this._gc);
+    clearInterval(this._usageTimer);
     this.tunnel.handle?.stop();
     for (const s of this.sessions.values()) await s.transport.close().catch(() => {});
     for (const room of this.rooms.values()) room.close();
@@ -316,6 +341,13 @@ export class Hub {
       this.closeRoom(room.code);
       return sendJson(res, 200, { closed: room.code });
     }
+    if (what === 'usage') {
+      // Posted by `crewroom statusline` (Claude Code status line) with Claude Code's own numbers.
+      const entry = parseClaudeStatusline(body);
+      if (entry.sessionId) this.statusline.set(entry.sessionId, entry);
+      this.refreshUsage();
+      return sendJson(res, 200, { ok: true });
+    }
     if (what === 'tunnel') {
       await this.setTunnel(!!body.on);
       return sendJson(res, 200, { state: this.tunnel.state, url: this.tunnel.url, error: this.tunnel.error, rooms: this.listRooms().map((r) => this.links(r)) });
@@ -339,16 +371,41 @@ export class Hub {
       return sendText(res, 200, inviteText(room, { links: this.links(room), viaPublic: !local }));
     }
 
+    if (sub[0] === 'prompt') {
+      if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
+      return sendText(res, 200, invitePrompt(room, { links: this.links(room), name: url.searchParams.get('name') || undefined, role: url.searchParams.get('role') || 'member' }));
+    }
+
     if (sub[0] === 'dashboard') {
       if (!isAdmin(url.searchParams.get('key'))) return sendText(res, 403, 'Wrong or missing dashboard key. Run "crewroom open" in the project folder to open the dashboard.\n');
       const html = fs.readFileSync(DASHBOARD, 'utf8').replaceAll('__ROOM_CODE__', room.code);
       return sendHtml(res, html);
     }
 
+    if (sub[0] === 'avatar' && sub[1]) {
+      const m = room.s.members[decodeURIComponent(sub[1].replace(/\.svg$/, ''))];
+      if (!m?.avatar) throw new RoomError('No avatar.', 404);
+      res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' });
+      return res.end(avatarSvg(m.avatar));
+    }
+
+    if (sub[0] === 'history') {
+      if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
+      return sendJson(res, 200, { messages: room.dashboardMessages({ before: Number(url.searchParams.get('before')) || undefined, limit: 100 }) });
+    }
+
     if (sub[0] === 'events') {
       if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
-      const push = () => res.write(`data: ${JSON.stringify({ ...room.snapshot(), links: this.links(room) })}\n\n`);
+      // First push sends recent messages; later pushes only the new ones, so a long chat stays cheap.
+      let lastSeq = 0;
+      const push = () => {
+        const messages = room.dashboardMessages({ after: lastSeq, limit: lastSeq ? 500 : 200 });
+        const reset = lastSeq === 0;
+        if (messages.length) lastSeq = messages[messages.length - 1].seq;
+        else if (reset) lastSeq = room.s.seq;
+        res.write(`data: ${JSON.stringify({ ...room.snapshot({ messageLimit: 0 }), messages, reset, links: this.links(room) })}\n\n`);
+      };
       let timer = null;
       const onChange = () => { if (!timer) timer = setTimeout(() => { timer = null; push(); }, 120); };
       push();
@@ -408,7 +465,10 @@ export class Hub {
       if (action === 'join') return sendJson(res, 200, await room.call('join', null, { via: local ? 'cli' : 'http (public link)', ...args, token: tok }));
       const member = room.memberByToken(tok);
       if (!member) throw new RoomError('Missing or unknown token. Join first.', 401);
-      return sendJson(res, 200, await room.call(action, member, args));
+      const result = JSON.stringify(await room.call(action, member, args));
+      room.account(member, JSON.stringify(args).length, result.length);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(result);
     }
 
     if (sub[0] === 'mcp') return this._mcp(req, res, { roomCode: room.code, local });

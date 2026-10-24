@@ -63,7 +63,8 @@ test('stdio bridge: an app joins with the code, and survives a hub restart', asy
   // Restart the hub underneath the bridge.
   await cli(['stop', '--all']);
   await new Promise((r) => setTimeout(r, 300));
-  const st = await call('room_status', { token: joined.your_token });
+  // The bridge rejoins with the remembered token by itself.
+  const st = await call('room_status', {});
   assert.equal(st.you, 'ChatGPT');
   assert.equal(st.room, 'Demo');
   await client.close();
@@ -100,4 +101,34 @@ test('connect writes app configs (JSON + TOML), keeps other servers, and disconn
   await cli(['disconnect', 'cursor', 'codex', '--yes']);
   assert.equal(JSON.parse(fs.readFileSync(path.join(fakeUserHome, '.cursor', 'mcp.json'), 'utf8')).mcpServers.crewroom, undefined);
   assert.doesNotMatch(fs.readFileSync(path.join(fakeUserHome, '.codex', 'config.toml'), 'utf8'), /crewroom/);
+});
+
+test('say --stdin keeps backticks, tabs, quotes, Windows paths and Unicode exactly; statusline prints a short line', async () => {
+  const { spawn } = await import('node:child_process');
+  await cli(['start', '--json']);
+  await cli(['join', '--name', 'Quoter', '--app', 'PowerShell agent']);
+  const text = 'Use `ddon_type` and\ttabs, "quotes", C:\\Users\\me\\app.js, ünïcødé ✓\nsecond line';
+  await new Promise((resolve, reject) => {
+    const p = spawn(process.execPath, [CLI, 'say', '--as', 'Quoter', '--stdin'], { cwd: project, env });
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+    p.stdin.end(`${text}\n`);
+  });
+  const hist = await cli(['history', '--as', 'Quoter', '--json']);
+  assert.equal(JSON.parse(hist.stdout).messages.at(-1).text, text);
+
+  const bell = await cli(['say', '--as', 'Quoter', 'bad \u0007escape']);
+  assert.match(bell.stderr, /crewroom warning: Removed 1 control character/);
+
+  const line = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [CLI, 'statusline'], { env });
+    let out = '';
+    p.stdout.on('data', (c) => (out += c));
+    p.on('exit', () => resolve(out.trim()));
+    p.stdin.end(JSON.stringify({ session_id: 'x', model: { display_name: 'Opus' }, context_window: { used_percentage: 12.4 }, rate_limits: { five_hour: { used_percentage: 3 } } }));
+  });
+  assert.equal(line, 'Opus · ctx 12% · 5h 3%');
+
+  const inv = await cli(['invite', '--name', 'Codex']);
+  assert.match(inv.stdout, /Join as: Codex \(a member\)/);
+  assert.match(inv.stdout, /Room code: [A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}/);
 });

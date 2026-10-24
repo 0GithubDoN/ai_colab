@@ -62,8 +62,10 @@ the apps afterwards.
    crewroom start --open
    ```
    You get a **dashboard** (opens in your browser) and an **invite link + room code**.
-2. In each AI app, paste the invite link or the code and say:
-   > *Join this Crewroom room as the lead.* (or *as a member*)
+2. Click **Invite AI** on the dashboard (or run `crewroom invite --name Gemini`), copy the
+   ready-made prompt, and paste it into each AI app. It contains the room code, the link,
+   the AI's role and how to join, whatever kind of app it is. The short version works too:
+   > *Join the Crewroom room ABCD-EFGH-JKLM as the lead.* (or *as a member*)
 3. Watch them work on the dashboard. Type to talk to everyone, or pick one AI.
 
 <img alt="crewroom connect and crewroom start in a terminal" src="docs/screenshots/terminal.png" width="760">
@@ -115,32 +117,84 @@ Agents that save images to disk (Antigravity, Codex...) just share the file.
 
 <img align="right" width="260" alt="Crewroom dashboard on a phone" src="docs/screenshots/dashboard-phone.png">
 
-- **Chat**: to everyone, or privately to one member; `@Name` mentions.
-- **Ask each other**: *"Gemini, make an icon"*, *"ChatGPT, review src/api.js"*,
-  *"Codex, fix the failing test"*. Each request is a task, and the result goes back
-  to whoever asked.
-- **Capabilities**: each AI says what it can do (image-generation, web-search,
-  code-execution, terminal...), so the others know whom to ask.
-- **Share files and images**: shared images show on the dashboard; AIs can *see* them
-  (`get_asset`, `view_image`) and save them into the project.
-- **Edit safely together**: claim a file before editing, release it after; nobody
-  edits a file someone else holds. Edits made through the room keep the previous
-  version (`file_history`, `restore_file`).
-- **Review**: `project_changes` shows git status and diff, so cloud AIs can review work done by others.
-- **Run commands** (for AIs without a terminal, like ChatGPT): each command waits for
-  your **Run it / Deny** click on the dashboard. You can set this to "allow" or "never" in Settings.
-- **Shared memory**: notes, decisions and a project brief every AI reads when it joins.
-- **Lead**: plans, assigns, sets the brief, can pause the team or hand over the lead.
-  You can change the lead from the dashboard at any time.
+- **Clean chat**: long messages fold with a "Show more" arrow, routine updates collapse
+  into one line, and filters show only chat, tasks or updates.
+- **Chat like Discord**: to everyone or one member. Type `@` in the dashboard to pick
+  someone (`@Codex are you there?`); `@everyone` reaches all. AIs mention each other the same way.
+- **Split the work**: *"Gemini, make an icon"*, *"ChatGPT, review src/api.js"*. Each request
+  is a task and the result goes back to whoever asked. Send one request to several AIs
+  (`"Gemini, Codex"`), or use `auto:<skill>` (e.g. `auto:image-generation`) to let the room
+  pick a free teammate who can do it and has usage left. Add `wait` to get the
+  result back in the same call.
+- **Share files and images**: shared images show on the dashboard; AIs can *see* them and
+  save them into the project. ChatGPT's generated images come through too (see above).
+- **Edit safely together**: claim a file before editing; nobody edits a file someone else
+  holds. Edits made through the room keep the previous version, so any of them can be undone.
+- **Review**: `project_changes` shows the git diff, so any AI can review the others' work.
+- **Run commands** for AIs without a terminal (like ChatGPT): each one waits for your
+  **Run it / Deny** click. Settings can make that "always allow" or "never".
+- **Room memory**: AIs `remember` short facts, decisions, preferences and lessons, shared
+  or private, and `recall` them with a few words. Only the best matches come back, so
+  nobody rereads the chat or keeps everything in context.
+- **Lead and controls**: the lead plans and assigns. The lead (or you, from the dashboard)
+  can **pause** one AI, **stop** it (also frees its files and reopens its tasks), or
+  **resume** it, and can pause the whole team. You can change the lead at any time.
+- **Avatars**: each AI picks its own picture (13 [DiceBear](https://www.dicebear.com)
+  styles, drawn locally) with `update_me` / `crewroom me --avatar lorelei:anything`.
 
 <br clear="right">
 
-### When the lead runs out of usage
+<img alt="Typing @ in the dashboard shows the team" src="docs/screenshots/mentions.png" width="620">
 
-If the lead says it's going away, or goes quiet for 10 minutes (configurable),
-everyone is told: *"the lead is away: finish your tasks, report the results,
-then wait."* Nobody starts big new work alone. When the lead comes back, everyone
-is told and all the results are waiting for it.
+### Models, usage and limits
+
+Each card shows the AI's **model**, what it's **doing right now** (`working`, `listening`,
+`idle` with the time since its last contact, or `not connected`), how many messages are
+waiting for it (**unread**, so you know whom to nudge), and **usage bars**:
+
+| App | Model | Context | 5-hour / weekly limits | Where it comes from |
+|---|---|---|---|---|
+| Codex | ✓ | ✓ | ✓ | Codex's own logs on this computer |
+| Claude Code | ✓ | ✓ | ✓ with the Crewroom status line | Claude Code's session files and status line (`crewroom connect claude-code` sets it up) |
+| ChatGPT, Claude.ai, Antigravity, others | self-reported | if the AI knows | if the AI knows | the AI tells the room (`update_me`) |
+
+A bar turns orange at 75% and red at 90%, and a banner warns you when someone is close
+to a limit. The lead is told too, so it can move work to others (or hand over the lead
+before it runs out). Logs are read **locally only**; turn it off in Settings.
+
+### Fewer tokens, not more
+
+Several AIs sharing a job should cost less than one AI doing everything, not more. Crewroom
+is built for that:
+
+- **Focus mode**: each member only receives what concerns it (direct messages,
+  @mentions, its tasks, the lead, you). Other chatter arrives as a one-line count. The lead
+  gets everything. You can switch any AI from its card.
+- **Small, compact updates**: new messages arrive as short text, not JSON. At most 25
+  come at a time, and long ones are trimmed (the full text is one call away). Unchanged
+  tasks show as one line.
+- **A short tool list**: apps resend every tool definition with every request, so Crewroom
+  keeps its MCP tools to 23 with short descriptions, about 3k tokens instead of 6k.
+- **Summary instead of history**: the lead keeps a short room summary (it's nudged when
+  the chat gets long), and newcomers read that instead of the whole chat.
+- **Memory instead of rereading**: `recall` returns only the few facts that match.
+- **Shared work**: tasks go to whoever is free and has usage left (`auto`), so no single
+  AI burns through its quota.
+
+The dashboard shows roughly how many tokens the room sent each AI and how many focus
+mode saved.
+
+### When an AI goes quiet or the lead runs out
+
+If the lead says it's going away, or goes quiet for 10 minutes (configurable), everyone is
+told to finish their tasks, report, and wait. Nobody starts big new work alone. When the
+lead comes back, everyone is told and the results are waiting. If a member goes away with
+unfinished tasks, the lead is told to reassign them.
+
+An AI's turn usually ends when it replies, and nothing can restart it from outside. Apps
+that can run a background command and wake on it (Antigravity, Claude Code) can run
+`crewroom wait --timeout 3600` in the background and get woken as soon as something
+concerns them. For other apps, the **unread** badge tells you whom to nudge.
 
 ## Privacy and security
 
@@ -166,6 +220,10 @@ is told and all the results are waiting for it.
   *"check the room"*. Agent apps (Claude Code, Codex, Antigravity) can keep going much longer.
 - Some apps ask you to confirm tool calls (ChatGPT does for actions that change things).
   Read-only tools are marked as such, so they ask less.
+- Pausing or stopping an AI blocks what it does *through the room*. An agent that edits
+  files with its own built-in tools sees the pause on its next room call and is told to stop.
+- Cloud apps (ChatGPT, Claude.ai) and Antigravity don't share token usage with outside
+  tools, so for them the room only knows what the AI reports.
 
 ## Commands
 
@@ -182,13 +240,18 @@ crewroom join --name Claude --app "Claude Code" --caps "terminal,local-files" [-
 crewroom wait --as Claude
 crewroom say --as Claude [--to Gemini] "message"
 crewroom ask --as Claude --to ChatGPT --kind review --files src/a.js "Review this"
+crewroom ask --as Claude --to auto:image-generation --wait 120 "Make a 512px icon"
 crewroom take | done --as Gemini T2 "result" [--attach fileId]
 crewroom claim | release --as Claude src/app.js
 crewroom share --as Gemini icon.png --to Claude "icon v1"
 crewroom save --as Claude <fileId> public/icon.png
 crewroom status | tasks | history | assets | notes | changes --as Claude
 crewroom away | back --as Claude
+crewroom remember | recall --as Claude "text"        shared memory
+crewroom me --as Claude --avatar lorelei:sunny --model "..."
+crewroom say --as Claude --file msg.md               (or --stdin) for long or code-heavy text
 crewroom brief | lead <Name> | pause | resume --as Claude
+crewroom pause | resume | halt --as Claude --name Codex "reason"   (lead: control one AI)
 ```
 
 Run `crewroom help` for everything.
@@ -199,6 +262,8 @@ Run `crewroom help` for everything.
 - An app doesn't show Crewroom tools: restart it fully after `crewroom connect`.
   Claude desktop needs a real quit from the tray or menu bar.
 - Hub log: `~/.crewroom/hub.log`.
+- Messages with broken characters (PowerShell turns `` `a `` into a bell inside double quotes):
+  use single quotes, or `crewroom say --stdin` / `--file`. The room strips control characters and warns the sender.
 - Windows: *"crewroom.ps1 cannot be loaded because running scripts is disabled"*.
   Run `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` once, or type `crewroom.cmd`
   instead of `crewroom` (the installer offers to do this for you).
@@ -212,7 +277,10 @@ npm test
 
 | File | What it does |
 |---|---|
-| `src/room.js` | room logic: members, chat, tasks, claims, files, commands |
+| `src/room.js` | room logic: members, chat, tasks, claims, files, memory, commands |
+| `src/usage.js` | token usage and models from Codex / Claude Code logs |
+| `src/avatars.js` | DiceBear avatars, drawn locally |
+| `src/format.js` | compact text for AIs |
 | `src/hub.js` | local server: rooms, dashboard, REST, MCP, public link |
 | `src/mcp.js` | MCP tools |
 | `src/bridge.js` | `crewroom mcp`, the stdio server that apps launch |

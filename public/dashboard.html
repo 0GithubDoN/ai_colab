@@ -7,167 +7,314 @@
 <title>Crewroom</title>
 <style>
   :root {
-    --bg: #f5f6f8; --panel: #ffffff; --line: #e2e5ea; --text: #1c2127; --muted: #69727e;
-    --accent: #3b6fd8; --accent-soft: #e8effc; --ok: #1f9d55; --warn: #b8730a; --bad: #c8382e;
-    --system: #858d98; --mine: #eef3ff; --shadow: 0 8px 30px rgba(0,0,0,.12);
+    --bg: #f4f5f7; --panel: #ffffff; --panel-2: #f8f9fb; --line: #e3e6eb; --line-2: #eef0f3;
+    --text: #1b2027; --muted: #687280; --faint: #9aa2ad;
+    --accent: #3b6fd8; --accent-soft: #e9effc; --ok: #1f9d55; --warn: #c27c0e; --bad: #d03b30;
+    --mine: #eef3ff; --shadow: 0 10px 34px rgba(16, 24, 40, .14); --radius: 10px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #101317; --panel: #171b20; --line: #2a3038; --text: #e6e9ed; --muted: #8d96a1;
-      --accent: #6b9bff; --accent-soft: #1d2a44; --ok: #3fcf7d; --warn: #e3a336; --bad: #ff6b60;
-      --system: #7d8691; --mine: #1a2232; --shadow: 0 8px 30px rgba(0,0,0,.5);
+      --bg: #0f1216; --panel: #161a1f; --panel-2: #1b2026; --line: #2a3038; --line-2: #222830;
+      --text: #e6e9ed; --muted: #8f98a3; --faint: #687180;
+      --accent: #6b9bff; --accent-soft: #1c2840; --ok: #3fcf7d; --warn: #e3a336; --bad: #ff6b60;
+      --mine: #19223a; --shadow: 0 10px 34px rgba(0, 0, 0, .5);
     }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; }
   a { color: var(--accent); }
-  header { display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0; display: flex; align-items: center; gap: 8px; }
-  header h1 .logo { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 13px; }
-  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); font-size: 12px; white-space: nowrap; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; flex: none; }
-  .dot.online, .dot.listening, .dot.on { background: var(--ok); }
-  .dot.listening { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
-  .dot.away, .dot.starting { background: var(--warn); }
-  .dot.offline, .dot.none, .dot.off { background: transparent; border: 1px solid var(--muted); }
-  .dot.error { background: var(--bad); }
-  .spacer { flex: 1; }
-  button, select, input, textarea { font: inherit; color: var(--text); }
-  button { border: 1px solid var(--line); background: var(--panel); border-radius: 7px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+  button, select, input, textarea { font: inherit; color: inherit; }
+  button { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
   button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ghost { border-color: transparent; background: transparent; }
+  button.ghost:hover { background: var(--panel-2); }
   button.danger { color: var(--bad); }
-  button.small { padding: 2px 7px; font-size: 12px; }
-  main { flex: 1; display: grid; grid-template-columns: 270px minmax(0, 1fr) 330px; min-height: 0; }
-  aside, section { min-height: 0; overflow: auto; }
-  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 12px; }
-  aside.right { border-right: 0; border-left: 1px solid var(--line); }
-  h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 0 8px; display: flex; align-items: center; gap: 6px; }
-  h2:first-child { margin-top: 0; }
-  h2 button { margin-left: auto; text-transform: none; letter-spacing: 0; }
-  .member { padding: 8px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 8px; }
-  .member .top { display: flex; align-items: center; gap: 6px; }
-  .member .name { font-weight: 600; }
-  .meta { color: var(--muted); font-size: 12px; }
-  .member .doing { font-size: 12px; margin-top: 3px; }
-  .member .actions { display: none; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
-  .member:hover .actions, .member:focus-within .actions { display: flex; }
-  .badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: #fff; text-transform: uppercase; letter-spacing: .04em; }
-  .caps { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
-  .cap { font-size: 11px; padding: 0 6px; border-radius: 5px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
-  .link { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
-  .link input { flex: 1; min-width: 0; font: 12px ui-monospace, monospace; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
-  .hint { font-size: 12px; color: var(--muted); }
-  .chatpane { display: flex; flex-direction: column; min-height: 0; }
-  #feed { flex: 1; overflow: auto; padding: 14px 18px; }
-  .msg { margin: 0 0 10px; max-width: 920px; }
-  .msg .head { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
-  .msg .who { font-weight: 600; font-size: 13px; }
-  .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; padding: 7px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); margin-top: 2px; }
-  .msg.system .body { background: transparent; border: 0; color: var(--system); padding: 0 0 0 2px; font-size: 12.5px; }
-  .msg.system .head { display: none; }
+  button.small { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
+  .muted { color: var(--muted); } .faint { color: var(--faint); }
+  .spacer { flex: 1; }
+
+  /* header */
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 15px; }
+  .logo { width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg, #5b8cff, #2f5fd0); display: grid; place-items: center; color: #fff; font-size: 14px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line-2); font-size: 12.5px; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); display: inline-block; flex: none; }
+  .dot.working { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  .dot.listening, .dot.online, .dot.on, .dot.idle { background: var(--ok); }
+  .dot.idle { opacity: .55; }
+  .dot.away, .dot.starting { background: var(--warn); }
+  .dot.offline, .dot.none, .dot.off { background: transparent; border: 1.5px solid var(--faint); }
+  .dot.error { background: var(--bad); }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); } 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent); } }
+  .warnbar { display: none; padding: 7px 16px; background: color-mix(in srgb, var(--warn) 18%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); font-size: 13px; }
+  .warnbar.bad { background: color-mix(in srgb, var(--bad) 15%, var(--panel)); }
+  .pausebar { display: none; padding: 7px 16px; background: var(--warn); color: #111; font-weight: 600; font-size: 13px; }
+
+  main { flex: 1; display: grid; grid-template-columns: 300px minmax(0, 1fr) 340px; min-height: 0; }
+  aside, .chatpane { min-height: 0; }
+  aside { background: var(--panel); overflow: auto; }
+  aside.left { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  aside.right { border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 4px 0 2px; display: flex; align-items: center; gap: 6px; font-weight: 650; }
+  h3 button { margin-left: auto; text-transform: none; letter-spacing: 0; }
+
+  /* team */
+  .avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 650; font-size: 11.5px; letter-spacing: .02em; flex: none; position: relative; }
+  .avatar .dot { position: absolute; right: -1px; bottom: -1px; border: 2px solid var(--panel); width: 11px; height: 11px; }
+  .avatar.sm { width: 22px; height: 22px; font-size: 9.5px; }
+  .avatar img { width: 100%; height: 100%; border-radius: 50%; display: block; }
+  .avatar.img { border: 1px solid var(--line); }
+  .working-strip .stack { display: inline-flex; flex: none; }
+  .working-strip .avatar.sm + .avatar.sm { margin-left: -9px; box-shadow: 0 0 0 2px var(--bg); }
+  .member { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; background: var(--panel); }
+  .member.working { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .member .top { display: flex; align-items: center; gap: 9px; }
+  .member .name { font-weight: 650; display: flex; align-items: center; gap: 6px; }
+  .member .state { font-size: 12px; color: var(--muted); }
+  .member .state.working { color: var(--accent); }
+  .unread { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--warn) 20%, var(--panel)); color: var(--warn); font-weight: 650; white-space: nowrap; }
+  .badge.paused { background: var(--warn); color: #111; }
+  .member.is-paused { opacity: .75; border-style: dashed; }
+  .badge { font-size: 9.5px; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: #fff; text-transform: uppercase; letter-spacing: .05em; font-weight: 650; }
+  .model { margin-top: 7px; font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+  .model b { font-weight: 600; }
+  .src { font-size: 10.5px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
+  .src.logs { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+  .doing { font-size: 12.5px; margin-top: 4px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meters { margin-top: 8px; display: grid; gap: 4px; }
+  .meter { display: grid; grid-template-columns: 54px 1fr 38px; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); }
+  .meter .bar { height: 6px; border-radius: 99px; background: var(--line-2); overflow: hidden; }
+  .meter .bar i { display: block; height: 100%; border-radius: 99px; background: var(--ok); }
+  .meter.warn .bar i { background: var(--warn); } .meter.bad .bar i { background: var(--bad); }
+  .meter .val { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  .meter-note { font-size: 11px; color: var(--faint); margin-top: 2px; }
+  .more { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 7px; font-size: 12px; color: var(--muted); display: none; }
+  .member.open .more { display: block; }
+  .more .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 5px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 2px 9px; font-size: 12px; background: var(--panel); }
+  .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .caps { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+  .cap { font-size: 10.5px; padding: 0 6px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line-2); color: var(--muted); }
+  .stats { margin-top: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; background: var(--panel-2); font-size: 12.5px; display: grid; gap: 3px; }
+  .stats div { display: flex; justify-content: space-between; }
+  .stats b { font-variant-numeric: tabular-nums; }
+
+  /* chat */
+  .chatpane { display: flex; flex-direction: column; }
+  .filters { display: flex; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); align-items: center; }
+  .chip { border-radius: 999px; padding: 3px 11px; font-size: 12.5px; }
+  .chip.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); font-weight: 600; }
+  #feed { flex: 1; overflow: auto; padding: 12px 18px 6px; }
+  #older { display: none; margin: 0 auto 10px; }
+  .msg { display: flex; gap: 10px; margin-top: 12px; max-width: 900px; }
+  .msg.cont { margin-top: 3px; }
+  .msg.cont .avatar { visibility: hidden; height: 0; }
+  .msg .col { min-width: 0; flex: 1; }
+  .msg .head { font-size: 12px; color: var(--muted); display: flex; gap: 7px; align-items: baseline; flex-wrap: wrap; margin-bottom: 2px; }
+  .msg.cont .head { display: none; }
+  .msg .who { font-weight: 650; font-size: 13px; cursor: pointer; }
+  .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; padding: 7px 11px; border-radius: 4px 12px 12px 12px; background: var(--panel); border: 1px solid var(--line); display: inline-block; max-width: 100%; }
+  .msg.human .body { background: var(--mine); border-color: color-mix(in srgb, var(--accent) 25%, var(--line)); }
+  .msg.dm .body { border-style: dashed; }
   .msg.task .body { border-left: 3px solid var(--warn); }
   .msg.result .body { border-left: 3px solid var(--ok); }
-  .msg.human .body { background: var(--mine); }
-  .msg.dm .body { border-style: dashed; }
+  .mention { color: var(--mc); background: color-mix(in srgb, var(--mc) 14%, transparent); border-radius: 5px; padding: 0 4px; font-weight: 600; }
+  .txt.clamp { max-height: 12.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 65%, transparent); mask-image: linear-gradient(#000 65%, transparent); }
+  .more-btn { border: 0; background: none; padding: 2px 0 0; color: var(--accent); font-size: 12.5px; font-weight: 600; }
+  .tag { font-size: 10.5px; padding: 0 6px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
   .att { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
-  .att img { width: auto; height: auto; min-width: 96px; min-height: 96px; max-width: 240px; max-height: 240px; object-fit: contain; background: var(--bg); border-radius: 6px; border: 1px solid var(--line); display: block; }
+  .att img { width: auto; height: auto; min-width: 96px; min-height: 96px; max-width: 240px; max-height: 240px; object-fit: contain; background: var(--panel-2); border-radius: 8px; border: 1px solid var(--line); display: block; }
+  .notice { margin: 10px 0 0 40px; font-size: 12.5px; color: var(--muted); display: flex; gap: 7px; align-items: baseline; }
+  .notice::before { content: "●"; font-size: 8px; color: var(--faint); }
+  .notice.important { color: var(--text); }
+  .notice.important::before { color: var(--warn); }
+  details.updates { margin: 8px 0 0 40px; font-size: 12px; color: var(--faint); }
+  details.updates summary { cursor: pointer; list-style: none; }
+  details.updates summary::-webkit-details-marker { display: none; }
+  details.updates summary::before { content: "▸ "; }
+  details.updates[open] summary::before { content: "▾ "; }
+  details.updates div { padding: 2px 0 0 14px; }
+  .working-strip { min-height: 26px; padding: 4px 18px; font-size: 12.5px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .working-strip .w { display: inline-flex; gap: 6px; align-items: center; }
+  .typing { display: inline-flex; gap: 2px; }
+  .typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: blink 1.2s infinite; }
+  .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .2; } 40% { opacity: 1; } }
   form.composer { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); align-items: flex-end; }
-  form.composer textarea { flex: 1; resize: none; min-height: 42px; max-height: 180px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
-  select, input[type=text], input[type=number], textarea.field { padding: 5px 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
-  .card { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; margin-bottom: 7px; font-size: 13px; }
+  .chatpane { position: relative; }
+  .mention-pop { position: absolute; left: 120px; bottom: 64px; z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; min-width: 240px; display: none; }
+  .mention-pop.on { display: block; }
+  .mention-pop div { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+  .mention-pop div.on, .mention-pop div:hover { background: var(--accent-soft); }
+  .mention-pop small { color: var(--muted); margin-left: auto; }
+  form.composer textarea { flex: 1; resize: none; min-height: 42px; max-height: 200px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+  form.composer textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); border-color: var(--accent); }
+  select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+
+  /* right */
+  .approvals { padding: 12px; border-bottom: 1px solid var(--line); display: none; background: color-mix(in srgb, var(--warn) 7%, var(--panel)); }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); padding: 0 8px; }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 10px 10px 8px; color: var(--muted); font-weight: 600; font-size: 13px; }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+  .tabs .count { font-size: 11px; color: var(--faint); margin-left: 3px; font-weight: 500; }
+  .tab { display: none; padding: 12px; overflow: auto; flex: 1; }
+  .tab.on { display: block; }
+  .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 8px; font-size: 13px; background: var(--panel); }
   .card .t { font-weight: 600; }
-  .card .r { white-space: pre-wrap; font-size: 12px; margin-top: 4px; color: var(--muted); max-height: 96px; overflow: auto; }
-  .card.approve { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
-  .card code { font: 12px ui-monospace, monospace; background: var(--bg); padding: 2px 5px; border-radius: 4px; display: block; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .card .r { white-space: pre-wrap; font-size: 12px; margin-top: 4px; color: var(--muted); max-height: 110px; overflow: auto; }
+  .card code { font: 12px ui-monospace, monospace; background: var(--panel-2); padding: 3px 6px; border-radius: 5px; display: block; margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .st { font-size: 11px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--line); }
-  .st.open { color: var(--accent); } .st.assigned, .st.in_progress, .st.pending, .st.running { color: var(--warn); } .st.done, .st.finished { color: var(--ok); } .st.blocked, .st.denied, .st.timed_out { color: var(--bad); }
-  .line { font-size: 12.5px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .st { font-size: 10.5px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--line); font-weight: 600; }
+  .st.open { color: var(--accent); } .st.assigned, .st.in_progress, .st.pending, .st.running { color: var(--warn); } .st.done, .st.finished { color: var(--ok); } .st.blocked, .st.denied, .st.timed_out, .st.expired { color: var(--bad); }
+  .line { font-size: 12.5px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .line:last-child { border-bottom: 0; }
   .line.decision { font-weight: 600; }
   .assets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .assets a { display: block; font-size: 11px; color: var(--muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .assets img, .assets .file { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
+  .assets img, .assets .file { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); }
   .assets .file { display: grid; place-items: center; font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .textblock { white-space: pre-wrap; font-size: 13px; padding: 9px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line-2); }
+  .empty { color: var(--faint); font-size: 12.5px; padding: 4px 0; }
+  details.done-tasks summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin: 6px 0; }
+
   #drop { position: fixed; inset: 0; background: color-mix(in srgb, var(--accent) 18%, transparent); border: 3px dashed var(--accent); display: none; place-items: center; font-size: 20px; z-index: 20; }
   #drop.on { display: grid; }
-  .brief { white-space: pre-wrap; font-size: 13px; padding: 8px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
-  .banner { padding: 6px 16px; background: var(--warn); color: #000; font-weight: 600; display: none; }
-  .empty { color: var(--muted); font-size: 12.5px; }
-  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); padding: 18px; width: min(560px, calc(100vw - 32px)); }
-  dialog::backdrop { background: rgba(0,0,0,.35); }
-  dialog h3 { margin: 0 0 10px; font-size: 16px; }
-  dialog label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
-  dialog input[type=text], dialog select, dialog textarea { width: 100%; }
-  dialog textarea { min-height: 90px; resize: vertical; padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
-  dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-  .help li { margin-bottom: 8px; }
-  .help code { font: 12px ui-monospace, monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
-  @media (max-width: 1100px) {
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); padding: 20px; width: min(580px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .4); }
+  dialog h2 { margin: 0 0 12px; font-size: 17px; }
+  dialog label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  dialog input[type=text], dialog input[type=number], dialog select, dialog textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  dialog textarea { min-height: 100px; resize: vertical; }
+  dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .codebox { font: 600 26px ui-monospace, monospace; letter-spacing: .06em; text-align: center; padding: 14px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+  .copyrow { display: flex; gap: 6px; margin-top: 6px; }
+  .copyrow input { flex: 1; min-width: 0; font: 12px ui-monospace, monospace; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); }
+  .steps { padding-left: 18px; margin: 10px 0 0; font-size: 13px; }
+  .steps li { margin-bottom: 6px; }
+  .steps code { font: 12px ui-monospace, monospace; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+  .check { display: flex; gap: 8px; align-items: center; margin-top: 12px; font-size: 13px; }
+
+  @media (max-width: 1150px) { main { grid-template-columns: 260px minmax(0, 1fr) 300px; } }
+  @media (max-width: 920px) {
     main { display: flex; flex-direction: column; overflow: auto; }
-    .chatpane { order: -1; height: 72vh; flex: none; border-bottom: 1px solid var(--line); }
-    aside { flex: none; overflow: visible; border: 0; border-bottom: 1px solid var(--line); }
-    form.composer { padding: 8px; }
-    form.composer select { max-width: 96px; }
+    .chatpane { order: -1; height: 74vh; flex: none; border-bottom: 1px solid var(--line); }
+    aside { flex: none; overflow: visible; border: 0 !important; border-bottom: 1px solid var(--line) !important; }
+    .tab { overflow: visible; }
+    header .hide-sm { display: none; }
   }
 </style>
 </head>
 <body>
 <header>
-  <h1><span class="logo">✦</span><span id="roomName">Crewroom</span></h1>
+  <div class="brand"><span class="logo">✦</span><span id="roomName">Crewroom</span></div>
   <span class="pill" id="leadPill"><span class="dot none"></span>Lead: -</span>
-  <span class="pill" id="connPill"><span class="dot starting"></span>connecting…</span>
+  <span class="pill hide-sm" id="connPill"><span class="dot starting"></span>connecting</span>
   <span class="spacer"></span>
-  <button id="helpBtn">How to connect AIs</button>
-  <button id="publicBtn" title="A public link lets cloud AIs (ChatGPT, Claude.ai web) reach this room">Public link: off</button>
-  <button id="settingsBtn">Settings</button>
-  <button id="pauseBtn">Pause team</button>
+  <button class="primary" id="inviteBtn">Invite AI</button>
+  <button id="publicBtn" title="Lets cloud AIs (ChatGPT, Claude.ai web) reach this room">Public link: off</button>
+  <button id="pauseBtn">Pause</button>
+  <button id="settingsBtn" title="Settings">⚙</button>
 </header>
-<div class="banner" id="pausedBanner">The team is paused. Agents finish their current step and wait.</div>
+<div class="pausebar" id="pausebar">The team is paused. Agents finish their current step and wait.</div>
+<div class="warnbar" id="warnbar"></div>
 <main>
-  <aside>
-    <h2>Team</h2>
-    <div id="members"></div>
-    <h2>Invite</h2>
-    <div class="link"><input id="codeLink" readonly aria-label="Room code"><button class="small" data-copy="codeLink">Copy</button></div>
-    <div class="link"><input id="inviteLink" readonly aria-label="Invite link"><button class="small" data-copy="inviteLink">Copy</button></div>
-    <div class="hint">Paste the link or code into any AI app and say <i>“join this room”</i>. First time? Run <code>crewroom connect</code> once.</div>
-    <div id="publicBox" style="display:none;margin-top:10px">
-      <div class="hint" style="margin-bottom:4px"><b>Public MCP link</b> (ChatGPT / Claude.ai connectors):</div>
-      <div class="link"><input id="publicLink" readonly aria-label="Public MCP link"><button class="small" data-copy="publicLink">Copy</button></div>
-    </div>
-    <h2>Brief <button class="small" id="briefBtn">Edit</button></h2>
-    <div class="brief" id="brief"></div>
+  <aside class="left">
+    <h3>Team <span class="faint" id="teamCount"></span></h3>
+    <div id="members" style="display:grid;gap:8px"></div>
+    <div class="stats" id="stats"></div>
   </aside>
+
   <section class="chatpane">
-    <div id="feed"></div>
+    <div class="filters">
+      <button class="chip on" data-filter="all">All</button>
+      <button class="chip" data-filter="chat">Chat</button>
+      <button class="chip" data-filter="tasks">Tasks</button>
+      <button class="chip" data-filter="updates">Updates</button>
+      <span class="spacer"></span>
+      <span class="faint" id="msgCount" style="font-size:12px"></span>
+    </div>
+    <div id="feed"><button class="small" id="older">Load older messages</button></div>
+    <div class="working-strip" id="working"></div>
+    <div class="mention-pop" id="mentionPop"></div>
     <form class="composer" id="composer">
       <select id="to" aria-label="Send to"><option value="">Everyone</option></select>
-      <textarea id="text" placeholder="Talk to your AI team… (Enter to send, Shift+Enter for a new line, drop files to share)"></textarea>
+      <textarea id="text" rows="1" placeholder="Message the team…  @ to mention · Shift+Enter for a new line"></textarea>
+      <button class="ghost" type="button" id="attachBtn" title="Share a file">📎</button>
       <button class="primary" type="submit">Send</button>
     </form>
-  </section>
-  <aside class="right">
-    <div id="approvalsWrap" style="display:none"><h2>Waiting for your OK</h2><div id="approvals"></div></div>
-    <h2>Tasks <button class="small" id="newTaskBtn">+ New</button></h2>
-    <div id="tasks"></div>
-    <h2>Files being edited</h2>
-    <div id="claims"></div>
-    <h2>Shared files &amp; images <button class="small" id="uploadBtn">Upload</button></h2>
     <input type="file" id="fileInput" multiple hidden>
-    <div class="assets" id="assets"></div>
-    <div class="hint" style="margin-top:4px">or drop files anywhere on this page</div>
-    <h2>Notes &amp; decisions</h2>
-    <div id="notes"></div>
-    <h2>Commands run</h2>
-    <div id="commands"></div>
+  </section>
+
+  <aside class="right">
+    <div class="approvals" id="approvals"></div>
+    <div class="tabs" role="tablist">
+      <button class="on" data-tab="tasks">Tasks<span class="count" id="cTasks"></span></button>
+      <button data-tab="files">Files<span class="count" id="cFiles"></span></button>
+      <button data-tab="notes">Notes</button>
+      <button data-tab="log">Log</button>
+    </div>
+    <div class="tab on" id="tab-tasks">
+      <div class="row" style="margin-bottom:8px"><span class="muted" style="font-size:12.5px">Work handed between AIs</span><span class="spacer"></span><button class="small" id="newTaskBtn">+ New task</button></div>
+      <div id="tasks"></div>
+    </div>
+    <div class="tab" id="tab-files">
+      <h3>Being edited</h3><div id="claims"></div>
+      <h3 style="margin-top:14px">Shared files &amp; images <button class="small" id="uploadBtn">Upload</button></h3>
+      <div class="assets" id="assets"></div>
+    </div>
+    <div class="tab" id="tab-notes">
+      <h3>Summary <button class="small" id="summaryBtn">Edit</button></h3>
+      <div class="textblock" id="summary"></div>
+      <div class="faint" id="summaryMeta" style="font-size:11.5px;margin:4px 0 12px"></div>
+      <h3>Brief <button class="small" id="briefBtn">Edit</button></h3>
+      <div class="textblock" id="brief" style="margin-bottom:12px"></div>
+      <h3>Memory <span class="faint" id="memCount"></span></h3>
+      <input type="search" id="memSearch" placeholder="Search memory…" style="width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:6px">
+      <div id="memory" style="margin-bottom:12px"></div>
+      <h3>Decisions &amp; notes</h3>
+      <div id="notes"></div>
+    </div>
+    <div class="tab" id="tab-log">
+      <h3>Commands run on this computer</h3>
+      <div id="commands"></div>
+    </div>
   </aside>
 </main>
 <div id="drop">Drop to share with the team</div>
 
+<dialog id="inviteDlg">
+  <h2>Invite an AI</h2>
+  <div class="muted" style="font-size:13px">Copy this prompt and paste it into the AI's chat (Claude, Codex, Antigravity, ChatGPT…). It has everything the AI needs to join.</div>
+  <div class="row" style="margin-top:12px">
+    <span class="faint" style="font-size:12px">Quick pick:</span>
+    <button class="small" data-pick-name="Claude">Claude</button><button class="small" data-pick-name="ChatGPT">ChatGPT</button><button class="small" data-pick-name="Gemini">Gemini</button><button class="small" data-pick-name="Codex">Codex</button>
+  </div>
+  <div class="row" style="margin-top:8px;gap:8px">
+    <input type="text" id="invName" placeholder="Name for the AI (optional)" style="flex:1;min-width:140px">
+    <select id="invRole"><option value="member">as a member</option><option value="lead">as the lead</option></select>
+  </div>
+  <textarea id="invPrompt" readonly style="margin-top:10px;min-height:230px;font:12.5px/1.45 ui-monospace,monospace"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" id="copyPrompt">Copy prompt</button><span class="faint" style="font-size:12px">Room code <b id="dlgCode"></b></span></div>
+  <details style="margin-top:12px;font-size:13px"><summary class="muted" style="cursor:pointer">Links, and first-time setup</summary>
+    <ol class="steps">
+      <li><b>First time on this computer?</b> Run <code>crewroom connect</code> in a terminal and restart your AI apps.</li>
+      <li>ChatGPT and Claude.ai on the web run in the cloud: turn on <b>Public link</b> in the top bar and add the public MCP link as a connector (ChatGPT: developer mode).</li>
+    </ol>
+    <label>Invite link</label>
+    <div class="copyrow"><input id="dlgInvite" readonly><button class="small" data-copy="dlgInvite">Copy</button></div>
+    <div id="dlgPublic" style="display:none">
+      <label>Public MCP link</label>
+      <div class="copyrow"><input id="dlgPublicMcp" readonly><button class="small" data-copy="dlgPublicMcp">Copy</button></div>
+    </div>
+  </details>
+  <div class="buttons"><button onclick="this.closest('dialog').close()">Close</button></div>
+</dialog>
+
 <dialog id="taskDlg"><form method="dialog" id="taskForm">
-  <h3>New task</h3>
+  <h2>New task</h2>
   <label for="taskTitle">What needs doing</label><input type="text" id="taskTitle" required>
   <label for="taskTo">Assign to</label><select id="taskTo"><option value="">Anyone</option></select>
   <label for="taskKind">Kind</label>
@@ -176,8 +323,15 @@
   <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Create</button></div>
 </form></dialog>
 
-<dialog id="settingsDlg"><form method="dialog" id="settingsForm">
-  <h3>Room settings</h3>
+<dialog id="textDlg"><form method="dialog">
+  <h2 id="textDlgTitle"></h2>
+  <div class="muted" id="textDlgHint" style="font-size:12.5px"></div>
+  <textarea id="textDlgBody" style="min-height:180px;margin-top:10px"></textarea>
+  <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save</button></div>
+</form></dialog>
+
+<dialog id="settingsDlg"><form method="dialog">
+  <h2>Room settings</h2>
   <label for="setCommands">Commands on your computer, asked by AIs without a terminal (e.g. ChatGPT running “npm test”)</label>
   <select id="setCommands">
     <option value="ask">Ask me every time (recommended)</option>
@@ -186,42 +340,38 @@
   </select>
   <label for="setAway">Treat the lead as away after this many quiet minutes</label>
   <input type="number" id="setAway" min="1" max="240">
+  <label class="check"><input type="checkbox" id="setUsage"> Show token usage from Claude Code and Codex logs on this computer (read locally, never sent anywhere)</label>
   <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save</button></div>
 </form></dialog>
-
-<dialog id="briefDlg"><form method="dialog" id="briefForm">
-  <h3>Project brief</h3>
-  <div class="hint">Every AI sees this when it joins: the goal, the stack, who does what.</div>
-  <label for="briefText">Brief</label><textarea id="briefText" style="min-height:160px"></textarea>
-  <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save</button></div>
-</form></dialog>
-
-<dialog id="helpDlg">
-  <h3>How to bring AIs into this room</h3>
-  <ol class="help">
-    <li><b>Once per computer:</b> run <code>crewroom connect</code> in a terminal, then restart your AI apps. It sets up Claude desktop, Claude Code, Codex, Antigravity, Cursor, Windsurf, VS Code and Gemini CLI.</li>
-    <li><b>Each time:</b> paste the invite link (or just the code <code id="helpCode"></code>) into the AI's chat and say <i>“join this room as &lt;name&gt;, you're the lead”</i> (or a member).</li>
-    <li><b>ChatGPT or Claude.ai on the web:</b> they run in the cloud, so they can't reach your computer directly. Click <b>Public link</b> up top, then add the public MCP link as a connector (ChatGPT: developer mode → add connector; Claude.ai: Settings → Connectors → Add custom connector). The public link changes whenever it restarts.</li>
-    <li><b>Agents with a terminal</b> (Claude Code, Codex, Antigravity…) can also just read the invite link and use the <code>crewroom</code> command.</li>
-  </ol>
-  <div class="buttons"><button onclick="this.closest('dialog').close()">Close</button></div>
-</dialog>
 
 <script>
 const CODE = '__ROOM_CODE__';
 const KEY = new URLSearchParams(location.search).get('key');
 const base = `/r/${CODE}`;
 let state = null;
-let lastSeq = 0;
+let messages = [];
+let filter = 'all';
+let openMembers = new Set();
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const palette = ['#d9822b', '#3b6fd8', '#1f9d55', '#9b51e0', '#c8382e', '#0e9aa7', '#b8860b', '#d6336c'];
+const palette = ['#d9822b', '#3b6fd8', '#1f9d55', '#9b51e0', '#d03b30', '#0e9aa7', '#b8860b', '#d6336c'];
 const colorOf = (name) => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return palette[h % palette.length]; };
-const ago = (ts) => { if (!ts) return 'never'; const s = Math.round((Date.now() - ts) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
-const STATUS_LABEL = { assigned: 'assigned', in_progress: 'working', open: 'open', done: 'done', blocked: 'blocked', cancelled: 'cancelled' };
+const ago = (ts) => { if (!ts) return 'never'; const s = Math.max(0, Math.round((Date.now() - ts) / 1000)); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
+const until = (ts) => { if (!ts) return ''; const m = Math.round((ts - Date.now()) / 60000); if (m <= 0) return 'resets now'; return m < 60 ? `resets in ${m}m` : m < 2880 ? `resets in ${Math.floor(m / 60)}h ${m % 60}m` : `resets ${new Date(ts).toLocaleDateString(undefined, { weekday: 'short' })}`; };
+const ktok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n || 0));
+const STATE_LABEL = { working: 'working', listening: 'listening', idle: 'idle', away: 'away', offline: 'not connected' };
+const TASK_LABEL = { assigned: 'assigned', in_progress: 'working', open: 'open', done: 'done', blocked: 'blocked', cancelled: 'cancelled' };
+// Two letters, so Claude / ChatGPT / Codex don't all look like "C".
+const initials = (name) => { const w = String(name || '?').trim().split(/\s+/); return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).replace(/^./, (c) => c.toUpperCase()); };
+const memberByName = (name) => state?.members.find((m) => m.name === name);
+const avatar = (name, status, cls = '') => {
+  const url = name !== 'You' && memberByName(name)?.avatar;
+  const inner = url ? `<img src="${esc(url)}" alt="">` : esc(initials(name));
+  return `<span class="avatar ${cls}${url ? ' img' : ''}" style="background:${name === 'You' ? '#5b6470' : url ? 'var(--panel-2)' : colorOf(name)}">${inner}${status ? `<span class="dot ${status}"></span>` : ''}</span>`;
+};
 
-async function post(path, body, extraHeaders = {}) {
-  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-admin-key': KEY, ...extraHeaders }, body: JSON.stringify(body || {}) });
+async function post(path, body) {
+  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-admin-key': KEY }, body: JSON.stringify(body || {}) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) { alert(data.error || res.statusText); throw new Error(data.error); }
   return data;
@@ -231,8 +381,140 @@ const act = (action, body) => post(`${base}/api/${action}`, body);
 function connect() {
   const es = new EventSource(`${base}/events?key=${encodeURIComponent(KEY)}`);
   es.onopen = () => { $('connPill').innerHTML = '<span class="dot on"></span>live'; };
-  es.onerror = () => { $('connPill').innerHTML = '<span class="dot away"></span>reconnecting…'; };
-  es.onmessage = (e) => { state = JSON.parse(e.data); render(); };
+  es.onerror = () => { $('connPill').innerHTML = '<span class="dot away"></span>reconnecting'; };
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.reset) { messages = []; }
+    const fresh = data.messages || [];
+    state = data;
+    if (data.reset) { messages = fresh; renderFeed(true); }
+    else if (fresh.length) { messages.push(...fresh); appendMessages(fresh); }
+    if (messages.length > 3000) messages.splice(0, messages.length - 3000);
+    render();
+  };
+}
+
+// ---------------- feed ----------------
+
+const matches = (m) => filter === 'all' || (filter === 'chat' && (m.kind === 'chat')) || (filter === 'tasks' && (m.kind === 'task' || m.kind === 'result')) || (filter === 'updates' && m.kind === 'system');
+
+function renderFeed(scrollToEnd) {
+  const feed = $('feed');
+  feed.querySelectorAll('.msg, .notice, details.updates, .empty').forEach((n) => n.remove());
+  const list = messages.filter(matches);
+  if (!list.length) feed.insertAdjacentHTML('beforeend', '<div class="empty" style="padding:30px;text-align:center">Your AIs\' conversation will appear here live.</div>');
+  lastAuthor = null;
+  for (const m of list) {
+    const node = messageNode(m);
+    if (node) feed.appendChild(node);
+  }
+  $('older').style.display = messages.length && messages[0].seq > 1 ? 'block' : 'none';
+  if (scrollToEnd) feed.scrollTop = feed.scrollHeight;
+}
+
+let lastAuthor = null;
+function appendMessages(list) {
+  const feed = $('feed');
+  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
+  feed.querySelector('.empty')?.remove();
+  for (const m of list.filter(matches)) {
+    const node = messageNode(m);
+    if (node) feed.appendChild(node);
+  }
+  if (nearBottom || list.some((m) => m.fromId === 'human')) feed.scrollTop = feed.scrollHeight;
+}
+
+function messageNode(m) {
+  const feed = $('feed');
+  const wrap = document.createElement('div');
+  if (m.kind === 'system') {
+    lastAuthor = null;
+    if (m.quiet && filter !== 'updates') {
+      // Routine updates fold into one line so they don't drown the conversation.
+      let group = feed.lastElementChild;
+      if (!group || !group.matches('details.updates')) {
+        group = document.createElement('details');
+        group.className = 'updates';
+        group.innerHTML = '<summary></summary>';
+        feed.appendChild(group);
+      }
+      group.insertAdjacentHTML('beforeend', `<div>${esc(m.text)} <span class="faint">${new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>`);
+      const n = group.querySelectorAll('div').length;
+      group.querySelector('summary').textContent = n === 1 ? m.text : `${n} updates · ${m.text}`;
+      return null;
+    }
+    wrap.className = `notice${m.quiet ? '' : ' important'}`;
+    wrap.innerHTML = `<span>${linkify(esc(m.text))}</span><span class="faint">${new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>`;
+    return wrap;
+  }
+  const from = m.fromId === 'human' ? 'You' : m.from;
+  const key = `${m.fromId}|${m.toId}`;
+  const cont = lastAuthor && lastAuthor.key === key && Date.parse(m.time) - lastAuthor.t < 3 * 60_000 && m.kind === 'chat' && lastAuthor.kind === 'chat';
+  lastAuthor = { key, t: Date.parse(m.time), kind: m.kind };
+  wrap.className = ['msg', m.kind, m.fromId === 'human' ? 'human' : '', m.toId ? 'dm' : '', cont ? 'cont' : ''].join(' ');
+  // Long messages start folded so the chat stays readable; one click shows everything.
+  const long = m.text.length > 700 || m.text.split('\n').length > 12;
+  const att = (m.attachments || []).map((a) => a.mime.startsWith('image/') ? `<a href="${a.url}" target="_blank" rel="noopener"><img src="${a.url}" alt="${esc(a.name)}"></a>` : `<a href="${a.url}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join('');
+  wrap.innerHTML = `${avatar(from)}<div class="col">
+    <div class="head"><span class="who" style="color:${m.fromId === 'human' ? 'var(--text)' : colorOf(m.from)}">${esc(from)}</span>${m.to !== 'everyone' ? `<span>→ ${esc(m.to === 'Human' ? 'you' : m.to)}</span>` : ''}${m.task_id ? `<span class="tag">${m.task_id}</span>` : ''}<span class="faint">${new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
+    <div class="body">${long ? `<div class="txt clamp">${linkify(esc(m.text))}</div><button class="more-btn" type="button">Show more ▾</button>` : linkify(esc(m.text))}${att ? `<div class="att">${att}</div>` : ''}</div></div>`;
+  return wrap;
+}
+const linkify = (html) => html
+  .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+  .replace(/(^|\s)@([\w.-]+)/g, (all, pre, name) => {
+    const m = state?.members.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    const special = /^(everyone|all|lead|human)$/i.test(name);
+    if (!m && !special) return `${pre}@${name}`;
+    const c = m ? colorOf(m.name) : 'var(--accent)';
+    return `${pre}<span class="mention" style="--mc:${c}">@${m ? esc(m.name) : name}</span>`;
+  });
+
+// ---------------- everything else ----------------
+
+function meter(label, pct, note) {
+  if (typeof pct !== 'number') return '';
+  const cls = pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : '';
+  return `<div class="meter ${cls}" title="${esc(note || '')}"><span>${label}</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, pct))}%"></i></span><span class="val">${Math.round(pct)}%</span></div>`;
+}
+
+function memberCard(m) {
+  const u = m.usage;
+  const meters = u ? [
+    meter('Context', u.contextPct, u.contextWindow ? `${ktok(u.contextWindow)} token window` : ''),
+    meter('5-hour', u.session?.used, until(u.session?.resetsAt)),
+    meter('Weekly', u.weekly?.used, until(u.weekly?.resetsAt)),
+  ].join('') : '';
+  const resets = u ? [u.session?.resetsAt && `5-hour ${until(u.session.resetsAt)}`, u.weekly?.resetsAt && `weekly ${until(u.weekly.resetsAt)}`].filter(Boolean).join(' · ') : '';
+  const doing = m.activity || (m.status === 'working' ? m.lastAction : m.status === 'listening' ? 'waiting for messages' : '');
+  return `<div class="member ${m.status} ${m.paused ? 'is-paused' : ''} ${openMembers.has(m.name) ? 'open' : ''}" data-member="${esc(m.name)}">
+    <div class="top">${avatar(m.name, m.status)}
+      <div style="min-width:0;flex:1"><div class="name" style="color:${colorOf(m.name)}">${esc(m.name)}${m.role === 'lead' ? '<span class="badge">lead</span>' : ''}${m.paused ? `<span class="badge paused" title="${esc(`by ${m.paused.by}${m.paused.reason ? `: ${m.paused.reason}` : ''}`)}">${m.paused.stopped ? 'stopped' : 'paused'}</span>` : ''}</div>
+      <div class="state ${m.status}">${STATE_LABEL[m.status] || m.status}${m.status === 'working' ? ' <span class="typing"><i></i><i></i><i></i></span>' : ''}${['idle', 'offline', 'away'].includes(m.status) ? ` · last contact ${ago(m.lastSeen)}` : ''} · ${esc(m.app)}</div></div>
+      ${m.unread && m.status !== 'listening' && m.status !== 'working' ? `<span class="unread" title="Messages are waiting for ${esc(m.name)}. If its app can't wake itself, nudge it there (e.g. “check the room”).">${m.unread} unread</span>` : ''}
+      <button class="ghost small" data-toggle="${esc(m.name)}" title="Details">${openMembers.has(m.name) ? '▴' : '▾'}</button>
+    </div>
+    <div class="model">${m.model ? `<b>${esc(m.model)}</b><span class="src ${m.source === 'logs' ? 'logs' : ''}">${m.source === 'logs' ? '✓ from app logs' : 'self-reported'}</span>` : '<span class="faint">model unknown: ask it which model it is</span>'}</div>
+    ${doing ? `<div class="doing" title="${esc(doing)}">✎ ${esc(doing)}</div>` : ''}
+    ${meters ? `<div class="meters">${meters}</div>${resets ? `<div class="meter-note">${esc(resets)}</div>` : ''}` : ''}
+    <div class="more">
+      <div>${u ? `Usage from ${esc(u.source)}${u.tokensIn ? ` · ${ktok(u.tokensIn)} in / ${ktok(u.tokensOut)} out` : ''}${u.costUsd ? ` · $${u.costUsd.toFixed(2)}` : ''}${u.note ? ` · ${esc(u.note)}` : ''}` : 'This app does not share token usage (cloud apps can only self-report).'}</div>
+      <div style="margin-top:4px">Room traffic ≈ ${ktok(m.traffic.tokensIn + m.traffic.tokensOut)} tokens${m.traffic.tokensSaved ? ` · saved ≈ ${ktok(m.traffic.tokensSaved)} by focus mode` : ''}</div>
+      <div style="margin-top:4px">${esc(m.via || '')}${m.client ? ` · client ${esc(m.client.name)}${m.client.version ? ` ${esc(m.client.version)}` : ''}` : ''} · seen ${ago(m.lastSeen)}</div>
+      ${m.capabilities?.length ? `<div class="caps">${m.capabilities.map((c) => `<span class="cap">${esc(c)}</span>`).join('')}</div>` : ''}
+      <div class="row"><span>Receives</span><span class="seg"><button class="${m.listen === 'focus' ? 'on' : ''}" data-focus="focus" data-name="${esc(m.name)}" title="Only what concerns it (saves tokens)">focus</button><button class="${m.listen === 'all' ? 'on' : ''}" data-focus="all" data-name="${esc(m.name)}" title="Every message">all</button></span></div>
+      <div class="row"><button class="small" data-mention="${esc(m.name)}">@ Mention</button><button class="small" data-dm="${esc(m.name)}">Direct message</button>${m.role !== 'lead' ? `<button class="small" data-lead="${esc(m.name)}">Make lead</button>` : ''}</div>
+      <div class="row">${m.paused ? `<button class="small primary" data-control="resume" data-name="${esc(m.name)}">▶ Resume</button>` : `<button class="small" data-control="pause" data-name="${esc(m.name)}">⏸ Pause</button><button class="small danger" data-control="stop" data-name="${esc(m.name)}" title="Pause it, free its files and reopen its tasks">■ Stop</button>`}<button class="small danger" data-kick="${esc(m.name)}">Remove</button></div>
+    </div>
+  </div>`;
+}
+
+function renderMemory() {
+  const q = $('memSearch').value.trim().toLowerCase();
+  const list = (state.memory || []).filter((e) => !q || e.text.toLowerCase().includes(q) || (e.tags || []).some((t) => t.toLowerCase().includes(q)));
+  $('memCount').textContent = state.memory?.length ? state.memory.length : '';
+  $('memory').innerHTML = list.length ? list.slice(0, 50).map((e) => `<div class="line row"><span style="flex:1;min-width:0">${e.kind && e.kind !== 'fact' ? `<span class="tag">${esc(e.kind)}</span> ` : ''}${esc(e.text)} ${(e.tags || []).map((t) => `<span class="faint">#${esc(t)}</span>`).join(' ')} <span class="faint">· ${esc(e.by)}${e.private ? ' · private' : ''}</span></span><button class="small ghost" data-forget="${e.id}" title="Forget">✕</button></div>`).join('')
+    : `<div class="empty">${q ? 'No match.' : 'Nothing remembered yet. AIs save facts with remember and find them with recall: cheaper than rereading the chat.'}</div>`;
 }
 
 function render() {
@@ -240,27 +522,46 @@ function render() {
   document.title = `${s.name} · Crewroom`;
   $('roomName').textContent = s.name;
   const lead = s.lead;
-  $('leadPill').innerHTML = `<span class="dot ${lead.status}"></span>Lead: ${esc(lead.name || 'none yet')}${lead.name ? ` · ${lead.status}` : ''}`;
-  $('pauseBtn').textContent = s.paused ? 'Resume team' : 'Pause team';
-  $('pausedBanner').style.display = s.paused ? 'block' : 'none';
-  $('codeLink').value = s.code;
-  $('inviteLink').value = s.links.invite;
-  $('helpCode').textContent = s.code;
+  $('leadPill').innerHTML = `<span class="dot ${lead.status}"></span>Lead: ${esc(lead.name || 'none yet')}${lead.name && lead.status === 'away' ? ' · away' : ''}`;
+  $('pauseBtn').textContent = s.paused ? 'Resume' : 'Pause';
+  $('pausebar').style.display = s.paused ? 'block' : 'none';
   const t = s.links.tunnel;
-  $('publicBtn').innerHTML = `<span class="dot ${t.state === 'custom' ? 'on' : t.state}"></span> Public link: ${{ off: 'off', starting: 'starting…', on: 'on', custom: 'on', error: 'error' }[t.state]}`;
-  $('publicBtn').title = t.error || 'A public link lets cloud AIs (ChatGPT, Claude.ai web) reach this room';
-  $('publicBox').style.display = s.links.public_mcp ? 'block' : 'none';
-  $('publicLink').value = s.links.public_mcp || '';
-  $('brief').textContent = s.brief || 'No brief yet. The lead (or you) can set one: the goal, the stack, who does what.';
+  $('publicBtn').innerHTML = `<span class="dot ${t.state === 'custom' ? 'on' : t.state}"></span> Public: ${{ off: 'off', starting: 'starting…', on: 'on', custom: 'on', error: 'error' }[t.state]}`;
+  $('publicBtn').title = t.error || 'Lets cloud AIs (ChatGPT, Claude.ai web) reach this room';
 
-  $('members').innerHTML = s.members.length ? s.members.map((m) => `
-    <div class="member" tabindex="0">
-      <div class="top"><span class="dot ${m.status}"></span><span class="name" style="color:${colorOf(m.name)}">${esc(m.name)}</span>${m.role === 'lead' ? '<span class="badge">lead</span>' : ''}<span class="spacer"></span><span class="meta">${esc(m.status)}</span></div>
-      <div class="meta">${esc(m.app)}${m.model ? ` · ${esc(m.model)}` : ''} · via ${esc(m.via || 'cli')} · seen ${ago(m.lastSeen)}</div>
-      ${m.activity ? `<div class="doing">✎ ${esc(m.activity)}</div>` : ''}
-      ${m.capabilities?.length ? `<div class="caps">${m.capabilities.map((c) => `<span class="cap">${esc(c)}</span>`).join('')}</div>` : ''}
-      <div class="actions"><button class="small" data-dm="${esc(m.name)}">Message</button>${m.role !== 'lead' ? `<button class="small" data-lead="${esc(m.name)}">Make lead</button>` : ''}<button class="small danger" data-kick="${esc(m.name)}">Remove</button></div>
-    </div>`).join('') : '<div class="empty">No AI has joined yet. Paste the invite link into an AI app.</div>';
+  // usage warnings
+  const warns = [];
+  for (const m of s.members) {
+    for (const [k, label] of [['session', '5-hour'], ['weekly', 'weekly']]) {
+      const w = m.usage?.[k];
+      if (w && w.used >= 85) warns.push({ bad: w.used >= 95, text: `${m.name} is at ${Math.round(w.used)}% of its ${label} limit${w.resetsAt ? ` (${until(w.resetsAt)})` : ''}` });
+    }
+    if (m.usage?.contextPct >= 90) warns.push({ bad: false, text: `${m.name}'s context is ${Math.round(m.usage.contextPct)}% full` });
+  }
+  $('warnbar').style.display = warns.length ? 'block' : 'none';
+  $('warnbar').className = `warnbar${warns.some((w) => w.bad) ? ' bad' : ''}`;
+  $('warnbar').textContent = warns.map((w) => w.text).join(' · ');
+
+  // team
+  const order = { working: 0, listening: 1, idle: 2, away: 3, offline: 4 };
+  const members = [...s.members].sort((a, b) => (b.role === 'lead') - (a.role === 'lead') || order[a.status] - order[b.status] || a.name.localeCompare(b.name));
+  $('teamCount').textContent = members.length ? `${members.filter((m) => m.status !== 'offline').length}/${members.length} active` : '';
+  $('members').innerHTML = members.length ? members.map(memberCard).join('') : '<div class="empty">No AI yet. Click <b>Invite AI</b> to bring one in.</div>';
+  const st = s.stats;
+  $('stats').innerHTML = `<div><span class="muted">Messages</span><b>${st.messages}</b></div><div><span class="muted">Room tokens to AIs</span><b>≈ ${ktok(st.tokensSent)}</b></div><div><span class="muted">Saved by focus mode</span><b>≈ ${ktok(st.tokensSaved)}</b></div>`;
+  $('msgCount').textContent = `${st.messages} messages`;
+
+  // working strip
+  const working = members.filter((m) => m.status === 'working');
+  const listening = members.filter((m) => m.status === 'listening');
+  const doingOf = (m) => m.activity || m.lastAction || 'working';
+  const names = (list) => list.length <= 2 ? list.map((m) => m.name).join(' and ') : `${list.slice(0, -1).map((m) => m.name).join(', ')} and ${list.at(-1).name}`;
+  $('working').innerHTML = [
+    ...(working.length <= 2
+      ? working.map((m) => `<span class="w">${avatar(m.name, '', 'sm')}<b>${esc(m.name)}</b> ${esc(doingOf(m))} <span class="typing"><i></i><i></i><i></i></span></span>`)
+      : [`<span class="w" title="${esc(working.map((m) => `${m.name}: ${doingOf(m)}`).join('\n'))}"><span class="stack">${working.map((m) => avatar(m.name, '', 'sm')).join('')}</span><span><b>${esc(names(working))}</b> are working <span class="typing"><i></i><i></i><i></i></span></span></span>`]),
+    listening.length ? `<span class="w faint">${esc(names(listening))} listening</span>` : '',
+  ].join('');
 
   for (const id of ['to', 'taskTo']) {
     const sel = $(id); const cur = sel.value;
@@ -268,50 +569,41 @@ function render() {
     sel.value = s.members.some((m) => m.name === cur) ? cur : '';
   }
 
-  const feed = $('feed');
-  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
-  if (!s.messages.length && !lastSeq) feed.innerHTML = '<div class="empty">Your AIs\' conversation will appear here live.</div>';
-  const fresh = s.messages.filter((m) => m.seq > lastSeq);
-  if (fresh.length && lastSeq === 0) feed.innerHTML = '';
-  for (const m of fresh) feed.insertAdjacentHTML('beforeend', msgHtml(m));
-  if (fresh.length) lastSeq = fresh[fresh.length - 1].seq;
-  if (fresh.length && (nearBottom || fresh.some((m) => m.fromId === 'human'))) feed.scrollTop = feed.scrollHeight;
-
+  // approvals
   const pending = s.commands.filter((c) => c.status === 'pending');
-  $('approvalsWrap').style.display = pending.length ? 'block' : 'none';
-  $('approvals').innerHTML = pending.map((c) => `<div class="card approve"><div><b>${esc(c.by)}</b> wants to run:</div><code>${esc(c.command)}</code><div class="hint">in ${esc(s.projectRoot)}</div><div class="row" style="margin-top:6px"><button class="small primary" data-approve="${c.id}">Run it</button><button class="small danger" data-deny="${c.id}">Deny</button></div></div>`).join('');
+  $('approvals').style.display = pending.length ? 'block' : 'none';
+  $('approvals').innerHTML = pending.length ? `<h3 style="margin-top:0">Waiting for your OK</h3>` + pending.map((c) => `<div class="card"><div><b>${esc(c.by)}</b> wants to run:</div><code>${esc(c.command)}</code><div class="faint" style="font-size:11.5px">in ${esc(s.projectRoot)}</div><div class="row" style="margin-top:7px"><button class="small primary" data-approve="${c.id}">Run it</button><button class="small danger" data-deny="${c.id}">Deny</button></div></div>`).join('') : '';
 
+  // tasks
   const active = s.tasks.filter((t) => !['done', 'cancelled'].includes(t.status));
-  const finished = s.tasks.filter((t) => ['done', 'cancelled'].includes(t.status)).slice(0, 8);
-  $('tasks').innerHTML = s.tasks.length ? [...active, ...finished].map((t) => `
-    <div class="card">
-      <div class="row"><span class="st ${t.status}">${STATUS_LABEL[t.status] || t.status}</span><span class="meta">${t.id} · ${esc(t.kind)}</span></div>
-      <div class="t">${esc(t.title)}</div>
-      <div class="meta">${esc(t.from)} → ${esc(t.owner || t.assigned_to)}</div>
-      ${t.result ? `<div class="r">${esc(t.result)}</div>` : ''}
-    </div>`).join('') : '<div class="empty">No tasks yet.</div>';
+  const finished = s.tasks.filter((t) => ['done', 'cancelled'].includes(t.status));
+  $('cTasks').textContent = active.length ? active.length : '';
+  const taskCard = (t) => `<div class="card"><div class="row"><span class="st ${t.status}">${TASK_LABEL[t.status] || t.status}</span><span class="faint" style="font-size:12px">${t.id} · ${esc(t.kind)}</span></div>
+    <div class="t" style="margin-top:3px">${esc(t.title)}</div><div class="muted" style="font-size:12px">${esc(t.from)} → ${esc(t.owner || t.assigned_to)}</div>${t.result ? `<div class="r">${esc(t.result)}</div>` : ''}</div>`;
+  const openDone = document.querySelector('details.done-tasks')?.open;
+  $('tasks').innerHTML = (active.length ? active.map(taskCard).join('') : '<div class="empty">No active tasks.</div>')
+    + (finished.length ? `<details class="done-tasks" ${openDone ? 'open' : ''}><summary>${finished.length} finished</summary>${finished.slice(0, 30).map(taskCard).join('')}</details>` : '');
 
-  $('claims').innerHTML = s.claims.length ? s.claims.map((c) => `<div class="line"><b>${esc(c.path)}</b> <span class="hint">· ${esc(c.by)}${c.note ? ` · ${esc(c.note)}` : ''}</span> <button class="small" data-release="${esc(c.path)}">free</button></div>`).join('') : '<div class="empty">Nobody is editing a file.</div>';
+  $('cFiles').textContent = s.claims.length ? s.claims.length : '';
+  $('claims').innerHTML = s.claims.length ? s.claims.map((c) => `<div class="line row"><b>${esc(c.path)}</b><span class="muted">· ${esc(c.by)}${c.note ? ` · ${esc(c.note)}` : ''}</span><span class="spacer"></span><button class="small" data-release="${esc(c.path)}">free</button></div>`).join('') : '<div class="empty">Nobody is editing a file.</div>';
+  $('assets').innerHTML = s.assets.length ? s.assets.slice(0, 45).map((a) => `<a href="${a.url}" target="_blank" rel="noopener" title="${esc(a.name)} · from ${esc(a.from)}">${a.mime.startsWith('image/') ? `<img src="${a.url}" alt="" loading="lazy">` : `<div class="file">${esc(a.name.split('.').pop())}</div>`}${esc(a.name)}</a>`).join('') : '<div class="empty" style="grid-column:1/-1">Nothing shared yet. Drop files anywhere on this page.</div>';
 
-  $('assets').innerHTML = s.assets.length ? s.assets.slice(0, 30).map((a) => `<a href="${a.url}" target="_blank" rel="noopener" title="${esc(a.name)} · from ${esc(a.from)}">${a.mime.startsWith('image/') ? `<img src="${a.url}" alt="" loading="lazy">` : `<div class="file">${esc(a.name.split('.').pop())}</div>`}${esc(a.name)}</a>`).join('') : '<div class="empty" style="grid-column:1/-1">Nothing shared yet.</div>';
+  $('summary').textContent = s.summary?.text || 'No summary yet. The lead writes one when the chat gets long; newcomers read it instead of the whole history (saves tokens).';
+  $('summaryMeta').textContent = s.summary ? `by ${s.summary.by} · ${s.summary.messagesSince} messages since` : '';
+  $('brief').textContent = s.brief || 'No brief yet: the goal, the stack, who does what.';
+  renderMemory();
+  $('notes').innerHTML = s.notes.length ? s.notes.slice().reverse().slice(0, 60).map((n) => `<div class="line ${n.kind}">${n.kind === 'decision' ? '✔ ' : ''}${esc(n.text)} <span class="faint">· ${esc(n.from)}</span></div>`).join('') : '<div class="empty">No notes yet.</div>';
+  const ran = s.commands.filter((c) => c.status !== 'pending');
+  $('commands').innerHTML = ran.length ? ran.map((c) => `<div class="line"><span class="st ${c.status}">${c.status === 'finished' ? `exit ${c.exit_code}` : c.status}</span> <code style="display:inline;padding:1px 5px">${esc(c.command)}</code> <span class="faint">· ${esc(c.by)}</span></div>`).join('') : `<div class="empty">None yet. Setting: ${{ ask: 'ask me first', auto: 'allowed', off: 'never' }[s.settings.commands]}.</div>`;
 
-  $('notes').innerHTML = s.notes.length ? s.notes.slice().reverse().slice(0, 40).map((n) => `<div class="line ${n.kind}">${n.kind === 'decision' ? '✔ ' : ''}${esc(n.text)} <span class="hint">· ${esc(n.from)}</span></div>`).join('') : '<div class="empty">No notes yet.</div>';
-
-  const ran = s.commands.filter((c) => c.status !== 'pending').slice(0, 10);
-  $('commands').innerHTML = ran.length ? ran.map((c) => `<div class="line"><span class="st ${c.status}">${c.status === 'finished' ? `exit ${c.exit_code}` : c.status}</span> <code style="display:inline">${esc(c.command)}</code> <span class="hint">· ${esc(c.by)}</span></div>`).join('') : `<div class="empty">None. Setting: ${{ ask: 'ask me first', auto: 'allowed', off: 'never' }[s.settings.commands]}.</div>`;
+  // invite dialog contents
+  $('dlgCode').textContent = s.code;
+  $('dlgInvite').value = s.links.invite;
+  $('dlgPublic').style.display = s.links.public_mcp ? 'block' : 'none';
+  $('dlgPublicMcp').value = s.links.public_mcp || '';
 }
 
-function msgHtml(m) {
-  const cls = ['msg', m.kind];
-  if (m.fromId === 'human') cls.push('human');
-  if (m.toId) cls.push('dm');
-  const att = (m.attachments || []).map((a) => a.mime.startsWith('image/') ? `<a href="${a.url}" target="_blank" rel="noopener"><img src="${a.url}" alt="${esc(a.name)}" loading="lazy"></a>` : `<a href="${a.url}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join('');
-  return `<div class="${cls.join(' ')}">
-    <div class="head"><span class="who" style="color:${m.fromId === 'human' ? 'var(--text)' : colorOf(m.from)}">${esc(m.from === 'Human' ? 'You' : m.from)}</span>${m.to !== 'everyone' ? `<span>→ ${esc(m.to === 'Human' ? 'you' : m.to)}</span>` : ''}<span>${new Date(m.time).toLocaleTimeString()}</span>${m.task_id ? `<span>${m.task_id}</span>` : ''}</div>
-    <div class="body">${linkify(esc(m.text))}${att ? `<div class="att">${att}</div>` : ''}</div>
-  </div>`;
-}
-const linkify = (html) => html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>').replace(/(^|\s)@([\w-]+)/g, '$1<b>@$2</b>');
+// ---------------- actions ----------------
 
 $('composer').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -319,30 +611,136 @@ $('composer').addEventListener('submit', async (e) => {
   if (!text) return;
   await act('send', { text, to: $('to').value || undefined });
   $('text').value = '';
+  autoGrow();
 });
-$('text').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); } });
+const autoGrow = () => { const t = $('text'); t.style.height = 'auto'; t.style.height = `${Math.min(t.scrollHeight, 200)}px`; };
+$('text').addEventListener('input', autoGrow);
+// Discord-style @mentions: type @ and pick a teammate.
+let mentionItems = [];
+let mentionIndex = 0;
+function mentionQuery() {
+  const t = $('text');
+  const before = t.value.slice(0, t.selectionStart);
+  const m = before.match(/(^|\s)@([\w.-]*)$/);
+  return m ? m[2] : null;
+}
+function updateMentionPop() {
+  const q = mentionQuery();
+  const pop = $('mentionPop');
+  if (q === null || !state) { pop.classList.remove('on'); mentionItems = []; return; }
+  const all = [...state.members.map((m) => ({ name: m.name, hint: m.paused ? 'paused' : m.status })), { name: 'everyone', hint: 'all AIs' }];
+  mentionItems = all.filter((x) => x.name.toLowerCase().startsWith(q.toLowerCase())).slice(0, 8);
+  if (!mentionItems.length) { pop.classList.remove('on'); return; }
+  mentionIndex = Math.min(mentionIndex, mentionItems.length - 1);
+  pop.innerHTML = mentionItems.map((x, i) => `<div class="${i === mentionIndex ? 'on' : ''}" data-pick="${esc(x.name)}">${x.name === 'everyone' ? '<span class="avatar sm" style="background:var(--accent)">@</span>' : avatar(x.name, '', 'sm')}<b>${esc(x.name)}</b><small>${esc(x.hint)}</small></div>`).join('');
+  pop.classList.add('on');
+}
+function insertMention(name) {
+  const t = $('text');
+  const pos = t.selectionStart ?? t.value.length;
+  const before = t.value.slice(0, pos);
+  const m = before.match(/(^|\s)@([\w.-]*)$/);
+  const start = m ? pos - m[2].length - 1 : pos;
+  const prefix = !m && before && !/\s$/.test(before) ? ' ' : '';
+  t.value = `${t.value.slice(0, start)}${prefix}@${name} ${t.value.slice(pos)}`;
+  const caret = start + prefix.length + name.length + 2;
+  t.focus();
+  t.setSelectionRange(caret, caret);
+  $('mentionPop').classList.remove('on');
+  autoGrow();
+}
+$('text').addEventListener('input', updateMentionPop);
+$('text').addEventListener('click', updateMentionPop);
+$('mentionPop').addEventListener('mousedown', (e) => { const d = e.target.closest('[data-pick]'); if (d) { e.preventDefault(); insertMention(d.dataset.pick); } });
+$('text').addEventListener('keydown', (e) => {
+  if ($('mentionPop').classList.contains('on') && mentionItems.length) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); mentionIndex = (mentionIndex + (e.key === 'ArrowDown' ? 1 : -1) + mentionItems.length) % mentionItems.length; updateMentionPop(); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionItems[mentionIndex].name); return; }
+    if (e.key === 'Escape') { $('mentionPop').classList.remove('on'); return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); }
+});
+$('memSearch').addEventListener('input', () => state && renderMemory());
+// Click a name in the chat to mention it.
+$('feed').addEventListener('click', (e) => {
+  const more = e.target.closest('.more-btn');
+  if (more) {
+    const txt = more.previousElementSibling;
+    const open = txt.classList.toggle('clamp');
+    more.textContent = open ? 'Show more ▾' : 'Show less ▴';
+    return;
+  }
+  const w = e.target.closest('.who');
+  if (w && w.textContent !== 'You') insertMention(w.textContent);
+});
 $('pauseBtn').onclick = () => act('pause', { paused: !state.paused });
-$('helpBtn').onclick = () => $('helpDlg').showModal();
+async function refreshPrompt() {
+  const params = new URLSearchParams({ key: KEY, role: $('invRole').value });
+  if ($('invName').value.trim()) params.set('name', $('invName').value.trim());
+  $('invPrompt').value = await fetch(`${base}/prompt?${params}`).then((r) => r.text());
+}
+$('inviteBtn').onclick = () => { refreshPrompt(); $('inviteDlg').showModal(); };
+$('invName').addEventListener('input', refreshPrompt);
+$('invRole').addEventListener('change', refreshPrompt);
+document.querySelectorAll('[data-pick-name]').forEach((b) => b.onclick = () => { $('invName').value = b.dataset.pickName; refreshPrompt(); });
+$('copyPrompt').onclick = async () => {
+  $('invPrompt').select();
+  try { await navigator.clipboard.writeText($('invPrompt').value); } catch { document.execCommand('copy'); }
+  $('copyPrompt').textContent = 'Copied ✓';
+  setTimeout(() => ($('copyPrompt').textContent = 'Copy prompt'), 1500);
+};
 $('publicBtn').onclick = async () => {
   const on = !['on', 'custom', 'starting'].includes(state.links.tunnel.state);
   if (on && !confirm('Create a public link so cloud AIs (ChatGPT, Claude.ai web) can reach your rooms?\n\nAnyone who has the full link can join, so share it only with your AI apps. The first time, this downloads cloudflared (~20 MB).')) return;
-  $('publicBtn').innerHTML = '<span class="dot starting"></span> Public link: …';
   await post(`${base}/tunnel`, { on });
 };
-$('briefBtn').onclick = () => { $('briefText').value = state.brief || ''; $('briefDlg').showModal(); };
-$('briefDlg').addEventListener('close', () => { if ($('briefDlg').returnValue === 'ok') act('set_brief', { brief: $('briefText').value }); });
-$('settingsBtn').onclick = () => { $('setCommands').value = state.settings.commands; $('setAway').value = state.settings.leadAwayMinutes; $('settingsDlg').showModal(); };
-$('settingsDlg').addEventListener('close', () => { if ($('settingsDlg').returnValue === 'ok') act('update_settings', { commands: $('setCommands').value, leadAwayMinutes: Number($('setAway').value) }); });
+function editText(title, hint, value, save) {
+  $('textDlgTitle').textContent = title; $('textDlgHint').textContent = hint; $('textDlgBody').value = value || '';
+  const dlg = $('textDlg');
+  dlg.onclose = () => { if (dlg.returnValue === 'ok') save($('textDlgBody').value); };
+  dlg.showModal();
+}
+$('briefBtn').onclick = () => editText('Project brief', 'Every AI sees this when it joins: the goal, the stack, who does what.', state.brief, (v) => act('set_brief', { brief: v }));
+$('summaryBtn').onclick = () => editText('Room summary', 'What has happened so far: decisions, progress, what is left. Newcomers read this instead of the whole chat.', state.summary?.text, (v) => v.trim() && act('set_summary', { text: v }));
+$('settingsBtn').onclick = () => { $('setCommands').value = state.settings.commands; $('setAway').value = state.settings.leadAwayMinutes; $('setUsage').checked = state.settings.readUsage !== false; $('settingsDlg').showModal(); };
+$('settingsDlg').addEventListener('close', () => { if ($('settingsDlg').returnValue === 'ok') act('update_settings', { commands: $('setCommands').value, leadAwayMinutes: Number($('setAway').value), readUsage: $('setUsage').checked }); });
 $('newTaskBtn').onclick = () => { $('taskForm').reset(); $('taskDlg').showModal(); };
 $('taskDlg').addEventListener('close', () => {
   if ($('taskDlg').returnValue !== 'ok' || !$('taskTitle').value.trim()) return;
   act('ask', { title: $('taskTitle').value.trim(), to: $('taskTo').value || undefined, kind: $('taskKind').value, details: $('taskDetails').value });
 });
+document.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.id === `tab-${b.dataset.tab}`));
+});
+document.querySelectorAll('.chip').forEach((c) => c.onclick = () => {
+  filter = c.dataset.filter;
+  document.querySelectorAll('.chip').forEach((x) => x.classList.toggle('on', x === c));
+  renderFeed(true);
+});
+$('older').onclick = async () => {
+  const feed = $('feed');
+  const before = messages[0]?.seq;
+  const res = await fetch(`${base}/history?key=${encodeURIComponent(KEY)}&before=${before}`).then((r) => r.json());
+  const h = feed.scrollHeight;
+  messages.unshift(...res.messages);
+  renderFeed(false);
+  feed.scrollTop = feed.scrollHeight - h;
+};
 document.addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.copy) { const i = $(b.dataset.copy); i.select(); navigator.clipboard?.writeText(i.value); b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1200); }
+  if (b.dataset.toggle) { const n = b.dataset.toggle; openMembers.has(n) ? openMembers.delete(n) : openMembers.add(n); render(); }
+  if (b.dataset.focus) act('set_focus', { mode: b.dataset.focus, name: b.dataset.name });
   if (b.dataset.lead) act('set_lead', { name: b.dataset.lead });
   if (b.dataset.kick && confirm(`Remove ${b.dataset.kick} from the room?`)) act('kick', { name: b.dataset.kick });
+  if (b.dataset.control) {
+    const verb = b.dataset.control;
+    const reason = verb === 'resume' ? '' : prompt(`${verb === 'stop' ? 'Stop' : 'Pause'} ${b.dataset.name}. Reason (shown to it, optional):`, '');
+    if (reason !== null) act('control_member', { name: b.dataset.name, action: verb, reason: reason || undefined });
+  }
+  if (b.dataset.forget && confirm('Forget this memory?')) act('forget', { id: b.dataset.forget });
+  if (b.dataset.mention) insertMention(b.dataset.mention);
   if (b.dataset.dm) { $('to').value = b.dataset.dm; $('text').focus(); }
   if (b.dataset.release) act('release_file', { path: b.dataset.release });
   if (b.dataset.approve) act('approve_command', { command_id: b.dataset.approve, approve: true });
@@ -357,6 +755,7 @@ async function upload(files) {
   }
 }
 $('uploadBtn').onclick = () => $('fileInput').click();
+$('attachBtn').onclick = () => $('fileInput').click();
 $('fileInput').onchange = (e) => { upload(e.target.files); e.target.value = ''; };
 let dragDepth = 0;
 addEventListener('dragenter', (e) => { if (e.dataTransfer?.types?.includes('Files')) { dragDepth++; $('drop').classList.add('on'); } });
@@ -366,9 +765,9 @@ addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('drop').c
 addEventListener('paste', (e) => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); upload(files); } });
 // Images load after a message is drawn; keep the chat pinned to the bottom unless the user scrolled up.
 let stickToBottom = true;
-$('feed').addEventListener('scroll', () => { const f = $('feed'); stickToBottom = f.scrollHeight - f.scrollTop - f.clientHeight < 80; });
+$('feed').addEventListener('scroll', () => { const f = $('feed'); stickToBottom = f.scrollHeight - f.scrollTop - f.clientHeight < 90; });
 $('feed').addEventListener('load', (e) => { if (e.target.tagName === 'IMG' && stickToBottom) $('feed').scrollTop = $('feed').scrollHeight; }, true);
-if (matchMedia('(max-width: 700px)').matches) $('text').placeholder = 'Message your AI team…';
+if (matchMedia('(max-width: 700px)').matches) $('text').placeholder = 'Message…';
 setInterval(() => state && render(), 15000);
 connect();
 </script>
