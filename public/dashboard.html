@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Room</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --text: #1d2228; --muted: #6b7480;
+    --accent: #3b6fd8; --accent-soft: #e8effc; --ok: #1f9d55; --warn: #c27c0e; --bad: #c8382e;
+    --system: #8a929c; --mine: #f1f5ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #181c21; --line: #2a3038; --text: #e6e9ed; --muted: #8d96a1;
+      --accent: #6b9bff; --accent-soft: #1d2a44; --ok: #3fcf7d; --warn: #e3a336; --bad: #ff6b60;
+      --system: #7d8691; --mine: #1b2333;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--text); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; flex: none; }
+  .dot.online, .dot.listening { background: var(--ok); }
+  .dot.away { background: var(--warn); }
+  .dot.offline { background: var(--line); border: 1px solid var(--muted); }
+  .spacer { flex: 1; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 7px; padding: 5px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.small { padding: 2px 7px; font-size: 12px; }
+  main { display: grid; grid-template-columns: 260px 1fr 320px; height: calc(100% - 53px); min-height: 0; }
+  aside, section { min-height: 0; overflow: auto; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 12px; }
+  aside.right { border-right: 0; border-left: 1px solid var(--line); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 8px; }
+  h2:first-child { margin-top: 0; }
+  .member { padding: 8px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 8px; }
+  .member .top { display: flex; align-items: center; gap: 6px; }
+  .member .name { font-weight: 600; }
+  .member .meta { color: var(--muted); font-size: 12px; }
+  .member .doing { font-size: 12px; margin-top: 3px; }
+  .member .actions { display: none; gap: 4px; margin-top: 6px; }
+  .member:hover .actions { display: flex; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: #fff; text-transform: uppercase; letter-spacing: .04em; }
+  .caps { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+  .cap { font-size: 11px; padding: 0 6px; border-radius: 5px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+  .link { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .link input { flex: 1; min-width: 0; font: 12px ui-monospace, monospace; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  .hint { font-size: 12px; color: var(--muted); }
+  .chat { display: flex; flex-direction: column; min-height: 0; }
+  #feed { flex: 1; overflow: auto; padding: 14px 18px; }
+  .msg { margin: 0 0 10px; max-width: 900px; }
+  .msg .head { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: baseline; }
+  .msg .who { font-weight: 600; font-size: 13px; }
+  .msg .body { white-space: pre-wrap; word-wrap: break-word; padding: 7px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); margin-top: 2px; }
+  .msg.system .body { background: transparent; border: 0; color: var(--system); padding: 0; font-size: 12.5px; }
+  .msg.system .head { display: none; }
+  .msg.task .body { border-left: 3px solid var(--warn); }
+  .msg.result .body { border-left: 3px solid var(--ok); }
+  .msg.human .body { background: var(--mine); }
+  .msg.dm .body { border-style: dashed; }
+  .att { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .att a { font-size: 12px; color: var(--accent); }
+  .att img { width: auto; height: auto; min-width: 96px; min-height: 96px; max-width: 220px; max-height: 220px; object-fit: contain; background: var(--panel); border-radius: 6px; border: 1px solid var(--line); display: block; }
+  form.composer { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); align-items: flex-end; }
+  form.composer textarea { flex: 1; resize: none; min-height: 40px; max-height: 160px; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+  select { font: inherit; padding: 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); }
+  .task { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; margin-bottom: 7px; font-size: 13px; }
+  .task .t { font-weight: 600; }
+  .task .m { color: var(--muted); font-size: 12px; }
+  .task .r { white-space: pre-wrap; font-size: 12px; margin-top: 4px; color: var(--muted); max-height: 90px; overflow: auto; }
+  .st { font-size: 11px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--line); }
+  .st.open { color: var(--accent); } .st.claimed { color: var(--warn); } .st.done { color: var(--ok); } .st.blocked { color: var(--bad); }
+  .claim, .note { font-size: 12.5px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .note.decision { font-weight: 600; }
+  .assets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .assets a { display: block; font-size: 11px; color: var(--muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .assets img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+  .assets .file { width: 100%; aspect-ratio: 1; border-radius: 6px; border: 1px solid var(--line); display: grid; place-items: center; font-size: 11px; color: var(--muted); }
+  #drop { position: fixed; inset: 0; background: color-mix(in srgb, var(--accent) 18%, transparent); border: 3px dashed var(--accent); display: none; place-items: center; font-size: 20px; z-index: 10; }
+  #drop.on { display: grid; }
+  .brief { white-space: pre-wrap; font-size: 13px; padding: 8px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+  .banner { padding: 6px 16px; background: var(--warn); color: #000; font-weight: 600; display: none; }
+  .empty { color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 1000px) {
+    main { grid-template-columns: 1fr; height: auto; }
+    aside { border: 0; border-bottom: 1px solid var(--line); }
+    .chat { height: 75vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="roomName">AI Room</h1>
+  <span class="pill" id="leadPill"><span class="dot"></span><span>Lead: -</span></span>
+  <span class="pill" id="connPill">connecting…</span>
+  <span class="spacer"></span>
+  <button id="briefBtn">Edit brief</button>
+  <button id="pauseBtn">Pause team</button>
+</header>
+<div class="banner" id="pausedBanner">The room is paused. Agents finish their current step and wait.</div>
+<main>
+  <aside>
+    <h2>Team</h2>
+    <div id="members"><div class="empty">No AI has joined yet. Share the invite link.</div></div>
+    <h2>Invite</h2>
+    <div class="link"><input id="inviteLink" readonly><button class="small" data-copy="inviteLink">Copy</button></div>
+    <div class="hint" style="margin-bottom:8px">Paste into an AI app that can run commands (Claude, Codex, Antigravity, Cursor…) and say “join this room”.</div>
+    <div class="link"><input id="mcpLink" readonly><button class="small" data-copy="mcpLink">Copy</button></div>
+    <div class="hint" id="mcpHint">MCP URL: add as a connector (ChatGPT developer mode, Claude connectors, IDE MCP settings).</div>
+    <h2>Brief</h2>
+    <div class="brief" id="brief"></div>
+  </aside>
+  <section class="chat">
+    <div id="feed"></div>
+    <form class="composer" id="composer">
+      <select id="to" title="Send to"><option value="">Everyone</option></select>
+      <textarea id="text" placeholder="Talk to your AI team… (Enter to send, Shift+Enter for newline, drop files to share)"></textarea>
+      <button class="primary" type="submit">Send</button>
+    </form>
+  </section>
+  <aside class="right">
+    <h2>Tasks</h2>
+    <div id="tasks"><div class="empty">No tasks yet.</div></div>
+    <h2>Files being edited</h2>
+    <div id="claims"><div class="empty">Nobody is editing a file.</div></div>
+    <h2>Shared files &amp; images</h2>
+    <div class="assets" id="assets"></div>
+    <div style="margin-top:6px"><label class="hint"><input type="file" id="fileInput" multiple hidden><button type="button" class="small" id="uploadBtn">Upload…</button> or drop files anywhere</label></div>
+    <h2>Notes &amp; decisions</h2>
+    <div id="notes"><div class="empty">No notes yet.</div></div>
+  </aside>
+</main>
+<div id="drop">Drop to share with the team</div>
+<script>
+const CODE = '__ROOM_CODE__';
+const KEY = new URLSearchParams(location.search).get('key');
+const base = `/r/${CODE}`;
+let state = null;
+let lastSeq = 0;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const palette = ['#d9822b', '#3b6fd8', '#1f9d55', '#9b51e0', '#c8382e', '#0e9aa7', '#b8860b', '#d6336c'];
+const colorOf = (name) => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return palette[h % palette.length]; };
+const ago = (ts) => { if (!ts) return 'never'; const s = Math.round((Date.now() - ts) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
+
+async function act(action, body) {
+  const res = await fetch(`${base}/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-admin-key': KEY }, body: JSON.stringify(body || {}) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(data.error || res.statusText); throw new Error(data.error); }
+  return data;
+}
+
+function connect() {
+  const es = new EventSource(`${base}/events?key=${encodeURIComponent(KEY)}`);
+  es.onopen = () => { $('connPill').textContent = 'live'; };
+  es.onerror = () => { $('connPill').textContent = 'reconnecting…'; };
+  es.onmessage = (e) => { state = JSON.parse(e.data); render(); };
+}
+
+function render() {
+  const s = state;
+  document.title = `${s.name} · AI Room`;
+  $('roomName').textContent = s.name;
+  const lead = s.lead;
+  $('leadPill').innerHTML = `<span class="dot ${lead.status === 'none' ? 'offline' : lead.status}"></span><span>Lead: ${esc(lead.name || 'none')}${lead.name ? ` (${lead.status})` : ''}</span>`;
+  $('pauseBtn').textContent = s.paused ? 'Resume team' : 'Pause team';
+  $('pausedBanner').style.display = s.paused ? 'block' : 'none';
+  $('inviteLink').value = s.links.invite;
+  $('mcpLink').value = s.links.mcp;
+  $('mcpHint').textContent = s.links.public
+    ? 'MCP URL (public): add as a connector in ChatGPT developer mode, Claude.ai connectors, or IDE MCP settings.'
+    : 'MCP URL (local only): works for desktop apps\' MCP settings. ChatGPT / Claude.ai connectors need a public link: restart with --tunnel.';
+  $('brief').textContent = s.brief || 'No brief yet. The lead (or you) can set one.';
+
+  // members
+  $('members').innerHTML = s.members.length ? s.members.map((m) => `
+    <div class="member">
+      <div class="top"><span class="dot ${m.status}"></span><span class="name" style="color:${colorOf(m.name)}">${esc(m.name)}</span>${m.role === 'lead' ? '<span class="badge">lead</span>' : ''}<span class="spacer"></span><span class="meta">${esc(m.status)}</span></div>
+      <div class="meta">${esc(m.app)}${m.model ? ` · ${esc(m.model)}` : ''} · ${m.access === 'remote' ? 'via MCP' : 'on this computer'} · seen ${ago(m.lastSeen)}</div>
+      ${m.activity ? `<div class="doing">✎ ${esc(m.activity)}</div>` : ''}
+      ${m.capabilities?.length ? `<div class="caps">${m.capabilities.map((c) => `<span class="cap">${esc(c)}</span>`).join('')}</div>` : ''}
+      <div class="actions">${m.role !== 'lead' ? `<button class="small" data-lead="${esc(m.name)}">Make lead</button>` : ''}<button class="small" data-dm="${esc(m.name)}">Message</button><button class="small" data-kick="${esc(m.name)}">Remove</button></div>
+    </div>`).join('') : '<div class="empty">No AI has joined yet. Share the invite link.</div>';
+
+  const sel = $('to'); const cur = sel.value;
+  sel.innerHTML = '<option value="">Everyone</option>' + s.members.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+  sel.value = s.members.some((m) => m.name === cur) ? cur : '';
+
+  // feed (append-only rendering keeps scroll position stable)
+  const feed = $('feed');
+  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+  if (!s.messages.length) feed.innerHTML = '<div class="empty">Messages between your AIs will appear here live.</div>';
+  const fresh = s.messages.filter((m) => m.seq > lastSeq);
+  if (fresh.length && lastSeq === 0) feed.innerHTML = '';
+  for (const m of fresh) feed.insertAdjacentHTML('beforeend', msgHtml(m));
+  if (fresh.length) lastSeq = fresh[fresh.length - 1].seq;
+  if (fresh.length && nearBottom) feed.scrollTop = feed.scrollHeight;
+
+  // tasks
+  const active = s.tasks.filter((t) => !['done', 'cancelled'].includes(t.status));
+  const finished = s.tasks.filter((t) => ['done', 'cancelled'].includes(t.status)).slice(0, 8);
+  $('tasks').innerHTML = s.tasks.length ? [...active, ...finished].map((t) => `
+    <div class="task">
+      <div><span class="st ${t.status}">${t.status}</span> <span class="m">${t.id} · ${t.kind}</span></div>
+      <div class="t">${esc(t.title)}</div>
+      <div class="m">${esc(t.from)} → ${esc(t.claimed_by || t.assigned_to)}</div>
+      ${t.result ? `<div class="r">${esc(t.result)}</div>` : ''}
+    </div>`).join('') : '<div class="empty">No tasks yet.</div>';
+
+  $('claims').innerHTML = s.claims.length ? s.claims.map((c) => `<div class="claim"><b>${esc(c.path)}</b> <span class="hint">by ${esc(c.by)}${c.note ? ` · ${esc(c.note)}` : ''}</span> <button class="small" data-release="${esc(c.path)}">free</button></div>`).join('') : '<div class="empty">Nobody is editing a file.</div>';
+
+  $('assets').innerHTML = s.assets.slice(0, 30).map((a) => `<a href="${a.url}" target="_blank" title="${esc(a.name)} · from ${esc(a.from)}">${a.mime.startsWith('image/') ? `<img src="${a.url}" alt="">` : `<div class="file">${esc(a.name.split('.').pop())}</div>`}${esc(a.name)}</a>`).join('');
+
+  $('notes').innerHTML = s.notes.length ? s.notes.slice().reverse().slice(0, 40).map((n) => `<div class="note ${n.kind}">${n.kind === 'decision' ? '✔ ' : ''}${esc(n.text)} <span class="hint">— ${esc(n.from)}</span></div>`).join('') : '<div class="empty">No notes yet.</div>';
+}
+
+function msgHtml(m) {
+  const cls = ['msg', m.kind];
+  if (m.fromId === 'human') cls.push('human');
+  if (m.toId) cls.push('dm');
+  const att = (m.attachments || []).map((a) => a.mime.startsWith('image/') ? `<a href="${a.url}" target="_blank"><img src="${a.url}" alt="${esc(a.name)}"></a>` : `<a href="${a.url}" target="_blank">📎 ${esc(a.name)}</a>`).join('');
+  return `<div class="${cls.join(' ')}">
+    <div class="head"><span class="who" style="color:${m.fromId === 'human' ? 'var(--text)' : colorOf(m.from)}">${esc(m.from)}</span>${m.to !== 'everyone' ? `<span>→ ${esc(m.to)}</span>` : ''}<span>${new Date(m.time).toLocaleTimeString()}</span>${m.task_id ? `<span>${m.task_id}</span>` : ''}</div>
+    <div class="body">${linkify(esc(m.text))}${att ? `<div class="att">${att}</div>` : ''}</div>
+  </div>`;
+}
+const linkify = (html) => html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank">$1</a>').replace(/(^|\s)@([\w-]+)/g, '$1<b>@$2</b>');
+
+$('composer').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('text').value.trim();
+  if (!text) return;
+  await act('send', { text, to: $('to').value || undefined });
+  $('text').value = '';
+});
+$('text').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('composer').requestSubmit(); } });
+$('pauseBtn').onclick = () => act('pause', { paused: !state.paused });
+$('briefBtn').onclick = () => { const b = prompt('Project brief (every AI sees this when it joins):', state.brief || ''); if (b !== null) act('set_brief', { brief: b }); };
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button'); if (!t) return;
+  if (t.dataset.copy) { const i = $(t.dataset.copy); i.select(); navigator.clipboard?.writeText(i.value); t.textContent = 'Copied'; setTimeout(() => (t.textContent = 'Copy'), 1200); }
+  if (t.dataset.lead) act('set_lead', { name: t.dataset.lead });
+  if (t.dataset.kick && confirm(`Remove ${t.dataset.kick} from the room?`)) act('kick', { name: t.dataset.kick });
+  if (t.dataset.dm) { $('to').value = t.dataset.dm; $('text').focus(); }
+  if (t.dataset.release) act('release_file', { path: t.dataset.release });
+});
+
+async function upload(files) {
+  for (const f of files) {
+    const to = $('to').value;
+    await fetch(`${base}/upload?name=${encodeURIComponent(f.name)}${to ? `&to=${encodeURIComponent(to)}` : ''}`, { method: 'POST', headers: { 'x-admin-key': KEY, 'content-type': f.type || 'application/octet-stream' }, body: f });
+  }
+}
+$('uploadBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = (e) => upload(e.target.files);
+let dragDepth = 0;
+addEventListener('dragenter', (e) => { if (e.dataTransfer?.types?.includes('Files')) { dragDepth++; $('drop').classList.add('on'); } });
+addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('drop').classList.remove('on'); });
+addEventListener('dragover', (e) => e.preventDefault());
+addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); if (e.dataTransfer.files.length) upload(e.dataTransfer.files); });
+setInterval(() => state && render(), 20000);
+connect();
+</script>
+</body>
+</html>

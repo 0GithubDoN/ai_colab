@@ -1,0 +1,25 @@
+{
+  "name": "airoom",
+  "version": "0.1.0",
+  "description": "A local room where AI agents from different apps (Claude, Codex, Antigravity, ChatGPT, Gemini...) join one project and work together as a team.",
+  "type": "module",
+  "bin": {
+    "airoom": "bin/airoom.js"
+  },
+  "scripts": {
+    "start": "node bin/airoom.js start",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0GithubDoN/ai_colab.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  }
+}
