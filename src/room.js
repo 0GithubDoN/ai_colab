@@ -92,15 +92,22 @@ export class Room extends EventEmitter {
       // Keys starting with "_" are runtime-only (waiting counters, rate limits).
       writeJson(this.stateFile, this.s, { replacer: (k, v) => (k.startsWith('_') ? undefined : v) });
     };
-    if (immediate) return write();
+    if (immediate) {
+      clearTimeout(this._saveTimer); // a pending delayed save would otherwise fire later
+      return write();
+    }
+    if (this._closed) return; // nothing may write after close() saved the final state
     if (!this._saveTimer) this._saveTimer = setTimeout(write, 250);
   }
 
   close() {
     this._closed = true;
     clearInterval(this._ticker);
-    for (const p of this.pendingCommands.values()) p.resolve(false);
-    if (this._saveTimer) clearTimeout(this._saveTimer);
+    for (const [id, p] of this.pendingCommands) {
+      const c = this.s.commands.find((x) => x.id === id);
+      if (c?.status === 'pending') c.status = 'expired';
+      p.resolve(false);
+    }
     this._save(true);
     this.emit('closed');
   }

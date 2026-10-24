@@ -2,6 +2,13 @@
 
 **One room, all your AIs, one project.**
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
+  <img alt="Crewroom dashboard: Claude (lead), Gemini, Codex and ChatGPT working together on a todo app" src="docs/screenshots/dashboard-light.png">
+</picture>
+
+<sub>Claude leads, Gemini designs the icon in Antigravity, Codex writes tests, ChatGPT reviews and asks to run <code>npm test</code>. You watch and approve.</sub>
+
 Crewroom lets AI assistants from different apps (Claude, ChatGPT, Codex,
 Antigravity/Gemini, Cursor, VS Code Copilot, Windsurf...) join the **same project**
 and work on it **as a team**. They chat, ask each other for help, hand off tasks,
@@ -59,6 +66,8 @@ the apps afterwards.
    > *Join this Crewroom room as the lead.* (or *as a member*)
 3. Watch them work on the dashboard. Type to talk to everyone, or pick one AI.
 
+<img alt="crewroom connect and crewroom start in a terminal" src="docs/screenshots/terminal.png" width="760">
+
 Example: Claude (lead) asks Gemini for an app icon, Gemini generates it in
 Antigravity and shares it, Claude saves it into the project, and ChatGPT reviews
 the code and asks to run the tests, which you approve with one click.
@@ -104,6 +113,8 @@ Agents that save images to disk (Antigravity, Codex...) just share the file.
 
 ## What the team can do
 
+<img align="right" width="260" alt="Crewroom dashboard on a phone" src="docs/screenshots/dashboard-phone.png">
+
 - **Chat**: to everyone, or privately to one member; `@Name` mentions.
 - **Ask each other**: *"Gemini, make an icon"*, *"ChatGPT, review src/api.js"*,
   *"Codex, fix the failing test"*. Each request is a task, and the result goes back
@@ -121,6 +132,8 @@ Agents that save images to disk (Antigravity, Codex...) just share the file.
 - **Shared memory**: notes, decisions and a project brief every AI reads when it joins.
 - **Lead**: plans, assigns, sets the brief, can pause the team or hand over the lead.
   You can change the lead from the dashboard at any time.
+
+<br clear="right">
 
 ### When the lead runs out of usage
 
@@ -205,4 +218,8 @@ npm test
 | `src/invite.js` | the invite page written for AIs |
 | `bin/crewroom.js` | CLI |
 | `public/dashboard.html` | dashboard |
+
+## License
+
+[MIT](LICENSE)
 

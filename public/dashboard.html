@@ -364,6 +364,11 @@ addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); if (e.dataTransfer.files.length) upload(e.dataTransfer.files); });
 addEventListener('paste', (e) => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); upload(files); } });
+// Images load after a message is drawn; keep the chat pinned to the bottom unless the user scrolled up.
+let stickToBottom = true;
+$('feed').addEventListener('scroll', () => { const f = $('feed'); stickToBottom = f.scrollHeight - f.scrollTop - f.clientHeight < 80; });
+$('feed').addEventListener('load', (e) => { if (e.target.tagName === 'IMG' && stickToBottom) $('feed').scrollTop = $('feed').scrollHeight; }, true);
+if (matchMedia('(max-width: 700px)').matches) $('text').placeholder = 'Message your AI team…';
 setInterval(() => state && render(), 15000);
 connect();
 </script>

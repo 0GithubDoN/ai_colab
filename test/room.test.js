@@ -160,6 +160,16 @@ test('commands need the human: ask -> approve runs it; deny; off', async () => {
   room.close();
 });
 
+test('nothing is written after close(), even with a command still waiting for approval', async () => {
+  const { room, members: [, g] } = await setup('Claude', 'ChatGPT');
+  await room.call('run_command', g, { command: 'echo hi', wait_seconds: 0 });
+  room.close();
+  assert.equal(JSON.parse(fs.readFileSync(room.stateFile, 'utf8')).commands.at(-1).status, 'expired');
+  fs.rmSync(room.dataDir, { recursive: true, force: true });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(fs.existsSync(room.stateFile), false);
+});
+
 test('flood guard slows down a chatty agent', async () => {
   const { room, members: [a] } = await setup('A');
   for (let i = 0; i < 25; i++) await room.call('send', a, { text: `m${i}` });

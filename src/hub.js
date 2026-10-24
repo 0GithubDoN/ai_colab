@@ -321,6 +321,10 @@ export class Hub {
       return sendJson(res, 200, { state: this.tunnel.state, url: this.tunnel.url, error: this.tunnel.error, rooms: this.listRooms().map((r) => this.links(r)) });
     }
     if (what === 'shutdown') {
+      // Save and close every room before answering, so "crewroom stop" returns only when all data is on disk.
+      this.tunnel.handle?.stop();
+      for (const room of this.rooms.values()) room.close();
+      this.rooms.clear();
       sendJson(res, 200, { ok: true });
       setTimeout(() => this.stop().then(() => process.exit(0)), 50);
       return;

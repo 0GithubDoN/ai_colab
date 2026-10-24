@@ -416,7 +416,7 @@ async function main() {
     case 'assets':
       return out(await call('list_assets', {}));
     case 'activity':
-      return out(await call('set_activity', { activity: text || undefined, status: flags.away ? 'away' : flags.back ? 'online' : undefined }));
+      return out(await call('set_activity', { activity: pos.length ? text : undefined, status: flags.away ? 'away' : flags.back ? 'online' : undefined }));
     case 'away':
       return out(await call('set_activity', { activity: text || undefined, status: 'away' }));
     case 'back':
