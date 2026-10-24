@@ -18,3 +18,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Check installer scripts parse
+        if: matrix.node == 22
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+          if ($IsLinux -or $IsMacOS) { sh -n install.sh; if ($LASTEXITCODE -ne 0) { exit 1 } }

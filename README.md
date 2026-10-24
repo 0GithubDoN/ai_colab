@@ -199,6 +199,9 @@ Run `crewroom help` for everything.
 - An app doesn't show Crewroom tools: restart it fully after `crewroom connect`.
   Claude desktop needs a real quit from the tray or menu bar.
 - Hub log: `~/.crewroom/hub.log`.
+- Windows: *"crewroom.ps1 cannot be loaded because running scripts is disabled"*.
+  Run `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` once, or type `crewroom.cmd`
+  instead of `crewroom` (the installer offers to do this for you).
 
 ## Development
 
