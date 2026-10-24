@@ -1,34 +1,35 @@
-import { test, before, after } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { startServer } from '../src/server.js';
-import { Room, HUMAN_ID } from '../src/room.js';
+import { Room, HUMAN } from '../src/room.js';
 
-const run = promisify(execFile);
-const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'airoom.js');
 const tmpProject = () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'airoom-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewroom-p-'));
   fs.writeFileSync(path.join(dir, 'index.js'), 'console.log("hello");\n');
   return dir;
 };
 
-test('core: join, lead, ask, finish, and the result goes back to the asker', async () => {
+async function setup(...names) {
   const room = new Room({ projectRoot: tmpProject() });
-  const claude = room.memberByToken((await room.call('join', null, { name: 'Claude', app: 'Claude desktop', lead: true })).your_token);
-  const gpt = room.memberByToken((await room.call('join', null, { name: 'ChatGPT', app: 'ChatGPT', capabilities: ['image-generation'] })).your_token);
-  assert.equal(room.s.leadId, claude.id);
+  const members = [];
+  for (const [i, n] of names.entries()) {
+    const r = await room.call('join', null, { name: n, app: `${n} app`, lead: i === 0 });
+    members.push(room.memberByToken(r.your_token));
+  }
+  for (const m of members) await room.call('wait', m, { timeout_seconds: 0 });
+  return { room, members };
+}
 
+test('ask -> finish routes the result back to the asker, with attachments', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  assert.equal(room.s.leadId, claude.id);
   const { task } = await room.call('ask', claude, { to: 'ChatGPT', title: 'Make an icon', kind: 'asset' });
+  assert.equal(task.status, 'assigned');
   const forGpt = await room.call('wait', gpt, { timeout_seconds: 0 });
   assert.equal(forGpt.your_tasks[0].id, task.id);
-  assert.ok(forGpt.new_messages.some((m) => m.task_id === task.id));
+  assert.match(forGpt.guidance, /talking to you directly/);
 
   const shared = await room.call('share_file', gpt, { base64: Buffer.from('PNGDATA').toString('base64'), name: 'icon.png', message: false });
   await room.call('finish_task', gpt, { task_id: task.id, result: 'Here it is', attachments: [shared.asset.id] });
@@ -40,117 +41,149 @@ test('core: join, lead, ask, finish, and the result goes back to the asker', asy
 
   await room.call('save_asset', claude, { asset_id: shared.asset.id, path: 'public/icon.png' });
   assert.equal(fs.readFileSync(path.join(room.projectRoot, 'public/icon.png'), 'utf8'), 'PNGDATA');
-  room.flush();
+  room.close();
 });
 
-test('core: wait blocks until a message arrives', async () => {
-  const room = new Room({ projectRoot: tmpProject() });
-  const a = room.memberByToken((await room.call('join', null, { name: 'A' })).your_token);
-  const b = room.memberByToken((await room.call('join', null, { name: 'B' })).your_token);
-  await room.call('wait', b, { timeout_seconds: 0 }); // drain join notices
+test('wait blocks until a message arrives, and mentions are flagged', async () => {
+  const { room, members: [a, b] } = await setup('A', 'B');
   const started = Date.now();
   const pending = room.call('wait', b, { timeout_seconds: 5 });
-  setTimeout(() => room.call('send', a, { text: 'ping' }), 100);
+  setTimeout(() => room.call('send', a, { text: 'ping @B' }), 100);
   const r = await pending;
   assert.ok(Date.now() - started < 3000);
-  assert.equal(r.new_messages.at(-1).text, 'ping');
-  room.flush();
+  assert.equal(r.new_messages.at(-1).text, 'ping @B');
+  assert.equal(r.new_messages.at(-1).mentions_you, true);
+  room.close();
 });
 
-test('core: file claims protect files and paths stay inside the project', async () => {
-  const room = new Room({ projectRoot: tmpProject() });
-  const a = room.memberByToken((await room.call('join', null, { name: 'A' })).your_token);
-  const b = room.memberByToken((await room.call('join', null, { name: 'B' })).your_token);
+test('file claims protect files; paths stay inside the project', async () => {
+  const { room, members: [a, b] } = await setup('A', 'B');
   await room.call('claim_file', a, { path: 'index.js' });
-  await assert.rejects(room.call('edit_file', b, { path: 'index.js', old_text: 'hello', new_text: 'hi' }), /claimed by A/);
-  await room.call('edit_file', a, { path: 'index.js', old_text: 'hello', new_text: 'hi' });
+  await assert.rejects(room.call('edit_file', b, { path: 'index.js', old_text: 'hello', new_text: 'hi' }), /being edited by A/);
+  await room.call('edit_file', a, { path: path.join(room.projectRoot, 'index.js'), old_text: 'hello', new_text: 'hi' });
   assert.match(fs.readFileSync(path.join(room.projectRoot, 'index.js'), 'utf8'), /hi/);
   await assert.rejects(room.call('read_file', a, { path: '../../etc/passwd' }), /outside the project/);
-  await assert.rejects(room.call('write_file', a, { path: '.airoom/room.json', content: '{}' }), /managed by the room/);
-  room.flush();
+  await assert.rejects(room.call('read_file', a, { path: '/etc/passwd' }), /outside the project/);
+  await assert.rejects(room.call('write_file', a, { path: '.crewroom/room.json', content: '{}' }), /managed automatically/);
+  await assert.rejects(room.call('write_file', a, { path: '.git/config', content: '' }), /managed automatically/);
+  room.close();
 });
 
-test('core: when the lead is away members are told to finish and wait', async () => {
-  const room = new Room({ projectRoot: tmpProject() });
-  const lead = room.memberByToken((await room.call('join', null, { name: 'Claude', lead: true })).your_token);
-  const g = room.memberByToken((await room.call('join', null, { name: 'Gemini' })).your_token);
+test('file history and restore undo an edit', async () => {
+  const { room, members: [a] } = await setup('A');
+  await room.call('write_file', a, { path: 'index.js', content: 'broken\n' });
+  const { versions } = await room.call('file_history', a, { path: 'index.js' });
+  assert.equal(versions.length, 1);
+  await room.call('restore_file', a, { path: 'index.js' });
+  assert.match(fs.readFileSync(path.join(room.projectRoot, 'index.js'), 'utf8'), /hello/);
+  room.close();
+});
+
+test('restore works even when the edit and the restore happen in the same millisecond', async () => {
+  const { room, members: [a] } = await setup('A');
+  const realNow = Date.now;
+  const frozen = realNow();
+  Date.now = () => frozen;
+  try {
+    await room.call('write_file', a, { path: 'index.js', content: 'broken\n' });
+    await room.call('restore_file', a, { path: 'index.js' });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.match(fs.readFileSync(path.join(room.projectRoot, 'index.js'), 'utf8'), /hello/);
+  assert.equal((await room.call('file_history', a, { path: 'index.js' })).versions.length, 2);
+  room.close();
+});
+
+test('lead away: explicit and detected by silence; members are told to finish and wait', async () => {
+  const { room, members: [lead, g] } = await setup('Claude', 'Gemini');
   await room.call('ask', lead, { to: 'Gemini', title: 'Write tests' });
   await room.call('set_activity', lead, { status: 'away', activity: 'out of tokens' });
-  const r = await room.call('wait', g, { timeout_seconds: 0 });
+  let r = await room.call('wait', g, { timeout_seconds: 0 });
   assert.equal(r.lead.status, 'away');
-  assert.match(r.guidance, /lead \(Claude\) is away. Finish your 1 task/);
+  assert.match(r.guidance, /lead \(Claude\) is away\. Finish your 1 task/);
+
+  await room.call('status', lead); // any activity brings the lead back
+  r = await room.call('wait', g, { timeout_seconds: 0 });
+  assert.ok(r.new_messages.some((m) => /Claude is back/.test(m.text)));
+  assert.equal(r.new_messages.filter((m) => /back/.test(m.text)).length, 1, 'announced once');
+
+  // Silence: lead not seen for longer than leadAwayMinutes.
+  room._tick();
+  lead.lastSeen = Date.now() - 11 * 60_000;
+  room._tick();
+  r = await room.call('wait', g, { timeout_seconds: 0 });
+  assert.ok(r.new_messages.some((m) => /seems to be away/.test(m.text)));
+  await room.call('send', lead, { text: 'back!' });
+  r = await room.call('wait', g, { timeout_seconds: 0 });
+  assert.ok(r.new_messages.some((m) => /lead \(Claude\) is back/.test(m.text)));
+  room.close();
+});
+
+test('only the lead or the human can do lead things', async () => {
+  const { room, members: [, g] } = await setup('Claude', 'Gemini');
   await assert.rejects(room.call('set_brief', g, { brief: 'x' }), /Only the lead/);
-  await room.call('set_lead', { id: HUMAN_ID }, { name: 'Gemini' });
+  await room.call('set_lead', HUMAN, { name: 'Gemini' });
   assert.equal(room.leadStatus().name, 'Gemini');
-  room.flush();
+  await assert.rejects(room.call('update_settings', g, { commands: 'auto' }), /Only the human/);
+  room.close();
 });
 
-let srv;
-let projectDir;
-before(async () => {
-  projectDir = tmpProject();
-  srv = await startServer({ projectRoot: projectDir, port: 0, quiet: true, cliPath: CLI });
-});
-after(async () => { await srv.close(); });
-
-test('http: invite page, CLI join/say/wait, admin actions', async () => {
-  const base = `${srv.localBase}/r/${srv.room.code}`;
-  const invite = await (await fetch(`${base}/join`)).text();
-  assert.match(invite, /AI TEAM ROOM INVITE/);
-  assert.match(invite, /\/mcp/);
-
-  const cli = (...args) => run(process.execPath, [CLI, ...args], { cwd: projectDir });
-  const j = await cli('join', '--name', 'Claude', '--app', 'Claude desktop', '--lead');
-  assert.match(j.stdout, /Role: lead/);
-  await cli('join', '--name', 'Codex', '--app', 'Codex app', '--caps', 'terminal,code-execution');
-  await cli('wait', '--as', 'Codex', '--timeout', '0');
-  await cli('say', '--as', 'Claude', '--to', 'Codex', 'please review index.js');
-  const w = await cli('wait', '--as', 'Codex', '--timeout', '2');
-  assert.match(w.stdout, /Claude -> Codex: please review index.js/);
-
-  const res = await fetch(`${base}/api/send`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-admin-key': srv.room.adminKey }, body: JSON.stringify({ text: 'hello from the human' }) });
-  assert.equal(res.status, 200);
-  const bad = await fetch(`${base}/api/send`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"text":"x"}' });
-  assert.equal(bad.status, 401);
-  assert.equal((await fetch(`${srv.localBase}/r/WRONG/join`)).status, 404);
-  assert.equal((await fetch(`${base}/dashboard`)).status, 403);
-  assert.equal((await fetch(`${base}/dashboard?key=${srv.room.adminKey}`)).status, 200);
+test('an active member name cannot be taken over; an inactive one can rejoin', async () => {
+  const { room, members: [a] } = await setup('Claude');
+  await assert.rejects(room.call('join', null, { name: 'claude' }), /already in the room/);
+  a.lastSeen = Date.now() - 10 * 60_000;
+  const r = await room.call('join', null, { name: 'Claude', app: 'new chat' });
+  assert.equal(r.your_token, a.token);
+  room.close();
 });
 
-test('mcp: a connector-style client joins, chats, edits files and sees images', async () => {
-  const client = new Client({ name: 'test-chatgpt', version: '1.0.0' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${srv.localBase}/r/${srv.room.code}/mcp`)));
-  const { tools } = await client.listTools();
-  for (const name of ['join_room', 'wait_for_updates', 'ask_member', 'finish_task', 'read_file', 'edit_file', 'share_file', 'get_asset']) {
-    assert.ok(tools.some((t) => t.name === name), `missing tool ${name}`);
-  }
-  const call = async (name, args) => {
-    const r = await client.callTool({ name, arguments: args });
-    assert.ok(!r.isError, r.content?.[0]?.text);
-    return r;
-  };
-  const parse = (r) => JSON.parse(r.content[0].text);
+test('commands need the human: ask -> approve runs it; deny; off', async () => {
+  const { room, members: [, g] } = await setup('Claude', 'ChatGPT');
+  const pending = room.call('run_command', g, { command: 'echo crewroom-ok', wait_seconds: 10 });
+  await new Promise((r) => setTimeout(r, 50));
+  const c = room.s.commands.at(-1);
+  assert.equal(c.status, 'pending');
+  await room.call('approve_command', HUMAN, { command_id: c.id, approve: true });
+  const result = await pending;
+  assert.equal(result.status, 'finished');
+  assert.equal(result.exit_code, 0);
+  assert.match(result.stdout, /crewroom-ok/);
 
-  const joined = parse(await call('join_room', { name: 'ChatGPT', app: 'ChatGPT desktop', capabilities: ['image-generation', 'web-search'] }));
-  assert.equal(joined.role, 'member');
-  await call('send_message', { text: 'hi team, ChatGPT here' });
-  const file = parse(await call('read_file', { path: 'index.js' }));
-  assert.match(file.content, /console\.log/);
-  await call('claim_file', { path: 'index.js' });
-  await call('edit_file', { path: 'index.js', old_text: 'console.log', new_text: 'console.info' });
-  await call('release_file', { path: 'index.js' });
-  assert.match(fs.readFileSync(path.join(projectDir, 'index.js'), 'utf8'), /console\.info/);
+  const pending2 = room.call('run_command', g, { command: 'echo nope', wait_seconds: 10 });
+  await new Promise((r) => setTimeout(r, 50));
+  await room.call('approve_command', HUMAN, { command_id: room.s.commands.at(-1).id, approve: false });
+  assert.equal((await pending2).status, 'denied');
 
-  // 1x1 PNG
-  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-  const shared = parse(await call('share_file', { base64: png, name: 'icon.png', message: 'icon draft' }));
-  const img = await call('get_asset', { asset_id: shared.asset.id });
-  assert.equal(img.content[0].type, 'image');
-  assert.equal(img.content[0].mimeType, 'image/png');
+  await room.call('update_settings', HUMAN, { commands: 'off' });
+  await assert.rejects(room.call('run_command', g, { command: 'echo x' }), /turned off/);
+  room.close();
+});
 
-  const status = parse(await call('room_status', {}));
-  assert.ok(status.members.some((m) => m.name === 'ChatGPT' && m.access === 'remote'));
-  const waited = parse(await call('wait_for_updates', { timeout_seconds: 0 }));
-  assert.ok(Array.isArray(waited.new_messages));
-  await client.close();
+test('nothing is written after close(), even with a command still waiting for approval', async () => {
+  const { room, members: [, g] } = await setup('Claude', 'ChatGPT');
+  await room.call('run_command', g, { command: 'echo hi', wait_seconds: 0 });
+  room.close();
+  assert.equal(JSON.parse(fs.readFileSync(room.stateFile, 'utf8')).commands.at(-1).status, 'expired');
+  fs.rmSync(room.dataDir, { recursive: true, force: true });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(fs.existsSync(room.stateFile), false);
+});
+
+test('flood guard slows down a chatty agent', async () => {
+  const { room, members: [a] } = await setup('A');
+  for (let i = 0; i < 25; i++) await room.call('send', a, { text: `m${i}` });
+  await assert.rejects(room.call('send', a, { text: 'too many' }), /Slow down/);
+  room.close();
+});
+
+test('state survives a restart (same code, members, transient fields not saved)', async () => {
+  const { room, members: [a] } = await setup('A');
+  a._waiting = 3;
+  room.close();
+  const again = new Room({ projectRoot: room.projectRoot });
+  assert.equal(again.code, room.code);
+  assert.equal(again.memberByName('A').token, a.token);
+  assert.equal(again.memberByName('A')._waiting, undefined);
+  again.close();
 });

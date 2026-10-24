@@ -1,18 +1,37 @@
 {
-  "name": "airoom",
-  "version": "0.1.0",
-  "description": "A local room where AI agents from different apps (Claude, Codex, Antigravity, ChatGPT, Gemini...) join one project and work together as a team.",
+  "name": "crewroom",
+  "version": "0.2.0",
+  "description": "One room, all your AIs, one project. Claude, ChatGPT, Codex, Antigravity, Gemini, Cursor and more join the same project from their own apps and work together as a team while you watch live.",
   "type": "module",
   "bin": {
-    "airoom": "bin/airoom.js"
+    "crewroom": "bin/crewroom.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "start": "node bin/airoom.js start",
-    "test": "node --test test/*.test.js"
+    "test": "node --test --test-concurrency=1",
+    "start": "node bin/crewroom.js start"
   },
   "engines": {
     "node": ">=20"
   },
+  "keywords": [
+    "ai",
+    "mcp",
+    "agents",
+    "multi-agent",
+    "claude",
+    "chatgpt",
+    "codex",
+    "gemini",
+    "antigravity",
+    "collaboration"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/0GithubDoN/ai_colab.git"
