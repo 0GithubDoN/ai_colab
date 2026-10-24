@@ -103,6 +103,35 @@ function tomlReplace(text, block) {
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
+/**
+ * Claude Code shows its 5-hour / weekly limits only to a status line command. Install ours
+ * (it prints model · context · limits and forwards them to the dashboard), unless the user
+ * already has a status line of their own, which we never replace.
+ */
+export function claudeStatusline({ remove = false }) {
+  const file = path.join(process.env.CREWROOM_CLAUDE_HOME || path.join(H, '.claude'), 'settings.json');
+  let cfg;
+  try {
+    cfg = readConfigJson(file);
+  } catch {
+    return { ok: false, message: `could not read ${file}; status line not changed` };
+  }
+  const ours = (c) => /crewroom/.test(String(c?.command || ''));
+  if (remove) {
+    if (!ours(cfg.statusLine)) return null;
+    delete cfg.statusLine;
+  } else {
+    if (cfg.statusLine && !ours(cfg.statusLine)) {
+      return { ok: true, message: `you already have a Claude Code status line, so it was left alone. To show usage on the dashboard, use "${process.execPath}" "${CLI_PATH}" statusline as your status line command.` };
+    }
+    cfg.statusLine = { type: 'command', command: `"${process.execPath}" "${CLI_PATH}" statusline` };
+  }
+  backup(file);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(cfg, null, 2)}\n`);
+  return { ok: true, message: remove ? `removed the Crewroom status line from ${file}` : `status line added (model · context · 5-hour · weekly) in ${file}` };
+}
+
 /** Which apps look installed, and whether Crewroom is already set up in them. */
 export function appStatus() {
   return APPS.map((app) => {
@@ -134,10 +163,10 @@ export function configureApp(app, { remove = false } = {}) {
     const shell = process.platform === 'win32' && !/\.exe$/i.test(bin);
     const run = (args) => execFileSync(shell ? `"${bin}"` : bin, shell ? args.map((a) => (/[\s&()]/.test(a) ? `"${a}"` : a)) : args, { stdio: ['ignore', 'pipe', 'pipe'], shell });
     try { run(['mcp', 'remove', '--scope', 'user', SERVER]); } catch {}
-    if (remove) return [{ ok: true, message: 'removed from Claude Code' }];
+    if (remove) return [{ ok: true, message: 'removed from Claude Code' }, claudeStatusline({ remove: true })].filter(Boolean);
     try {
       run(['mcp', 'add', '--scope', 'user', SERVER, '--', e.command, ...e.args]);
-      return [{ ok: true, message: 'added to Claude Code (user scope)' }];
+      return [{ ok: true, message: 'added to Claude Code (user scope)' }, claudeStatusline({})].filter(Boolean);
     } catch (err) {
       return [{ ok: false, message: `claude mcp add failed (${String(err.stderr || err.message).trim()}). Run it yourself:\n    ${manual}` }];
     }

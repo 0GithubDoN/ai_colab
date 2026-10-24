@@ -79,7 +79,9 @@ test('REST: join, send, wait, and the human through the admin key', async () => 
 test('global MCP: join with an invite code, chat, edit files, view images', async () => {
   const { client, call, json } = await mcpClient(`${hub.localBase}/mcp`);
   const { tools } = await client.listTools();
-  for (const name of ['join_room', 'wait_for_updates', 'ask_member', 'finish_task', 'read_file', 'edit_file', 'share_file', 'get_asset', 'view_image', 'run_command', 'project_changes']) {
+  assert.ok(tools.length <= 25, `tool list stays small (${tools.length})`);
+  assert.ok(JSON.stringify(tools).length < 14_000, 'tool definitions stay cheap in tokens');
+  for (const name of ['join_room', 'wait_for_updates', 'ask_member', 'update_task', 'update_me', 'read_file', 'edit_file', 'share_file', 'get_asset', 'run_command', 'project_changes', 'lead_action']) {
     assert.ok(tools.some((t) => t.name === name), `missing tool ${name}`);
   }
   const share = tools.find((t) => t.name === 'share_file');
@@ -93,9 +95,9 @@ test('global MCP: join with an invite code, chat, edit files, view images', asyn
   assert.match(file.content, /console\.log/);
   await call('claim_file', { path: 'index.js' });
   await call('edit_file', { path: 'index.js', old_text: 'console.log', new_text: 'console.info' });
-  await call('release_file', { path: 'index.js' });
+  await call('claim_file', { path: 'index.js', release: true });
   assert.match(fs.readFileSync(path.join(project, 'index.js'), 'utf8'), /console\.info/);
-  const img = await call('view_image', { path: 'logo.png' });
+  const img = await call('read_file', { path: 'logo.png' });
   assert.equal(img.content[0].type, 'image');
   const status = json(await call('room_status'));
   assert.ok(status.members.some((m) => m.name === 'ChatGPT'));
@@ -133,8 +135,10 @@ test('a lost MCP session can continue with the token', async () => {
   await a.client.close();
   const b = await mcpClient(`${hub.localBase}/mcp`);
   const denied = await b.call('room_status', {}, { ok: false });
-  assert.match(denied.content[0].text, /not joined/);
-  const st = b.json(await b.call('room_status', { token: joined.your_token }));
+  assert.match(denied.content[0].text, /Not joined/);
+  const back = b.json(await b.call('join_room', { token: joined.your_token, name: 'ignored' }));
+  assert.equal(back.your_token, joined.your_token);
+  const st = b.json(await b.call('room_status', {}));
   assert.equal(st.you, 'Gemini');
   await b.client.close();
 });
@@ -173,4 +177,91 @@ test('single open room is auto-selected for local clients without an invite', as
   const r = json(await call('join_room', { name: 'Cursor', app: 'Cursor' }));
   assert.match(r.welcome, /Test Project/);
   await client.close();
+});
+
+test('MCP: wait returns compact text, the app name comes from the MCP handshake, tokens are counted', async () => {
+  const { client, call, json } = await mcpClient(`${hub.localBase}/r/${room.code}/mcp`);
+  const joined = json(await call('join_room', { name: 'Textie', model: 'some-model-1' }));
+  assert.match(joined.listening, /^focus/);
+  const r = await call('wait_for_updates', { timeout_seconds: 0 });
+  assert.match(r.content[0].text, /^lead: /);
+  assert.match(r.content[0].text, /\nnext: /);
+  const me = room.memberByName('Textie');
+  assert.equal(me.client.name, 'test-client');
+  assert.equal(me.app, 'test-client');
+  assert.ok(me.traffic.out > 0);
+  const snapMe = room.snapshot().members.find((m) => m.name === 'Textie');
+  assert.equal(snapMe.model, 'some-model-1');
+  assert.equal(snapMe.source, 'self');
+  await client.close();
+});
+
+test('Claude Code status line reports reach the matching member', async () => {
+  const api = (action, body, headers = {}) => fetch(`${hub.localBase}/r/${room.code}/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  await (await api('join', { name: 'CC', app: 'Claude Code' })).json();
+  const res = await fetch(`${hub.localBase}/hub/usage`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-hub-key': hub.key },
+    body: JSON.stringify({ session_id: 'cc-1', workspace: { current_dir: project }, model: { display_name: 'Opus' }, context_window: { used_percentage: 37 }, rate_limits: { five_hour: { used_percentage: 88 }, seven_day: { used_percentage: 41 } } }),
+  });
+  assert.equal(res.status, 200);
+  const cc = room.snapshot().members.find((m) => m.name === 'CC');
+  assert.equal(cc.model, 'Opus');
+  assert.equal(cc.usage.session.used, 88);
+  assert.equal(cc.usage.weekly.used, 41);
+  assert.equal(cc.usage.source, 'Claude Code status line');
+});
+
+test('dashboard events are incremental, and older messages can be paged in', async () => {
+  const events = [];
+  const req = http.get({ host: '127.0.0.1', port: hub.port, path: `/r/${room.code}/events?key=${room.adminKey}` });
+  const got = new Promise((resolve) => {
+    req.on('response', (res) => {
+      let buf = '';
+      res.on('data', (c) => {
+        buf += c;
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const chunk = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          if (chunk.startsWith('data: ')) events.push(JSON.parse(chunk.slice(6)));
+          if (events.length >= 2) resolve();
+        }
+      });
+    });
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  await room.call('send', { id: 'human', name: 'Human' }, { text: 'incremental hello' });
+  await got;
+  req.destroy();
+  assert.equal(events[0].reset, true);
+  assert.ok(events[0].messages.length > 1);
+  assert.equal(events[1].reset, false);
+  assert.deepEqual(events[1].messages.map((m) => m.text), ['incremental hello']);
+  const firstSeq = events[0].messages.at(-1).seq;
+  const hist = await (await fetch(`${hub.localBase}/r/${room.code}/history?key=${room.adminKey}&before=${firstSeq}`)).json();
+  assert.ok(hist.messages.every((m) => m.seq < firstSeq));
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/history`)).status, 403);
+});
+
+test('avatars are drawn locally as SVG', async () => {
+  const api = (action, body) => fetch(`${hub.localBase}/r/${room.code}/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  await (await api('join', { name: 'Pic', avatar: 'pixel-art:hello' })).json();
+  const snap = room.snapshot().members.find((m) => m.name === 'Pic');
+  const res = await fetch(`${hub.localBase}${snap.avatar}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/svg+xml');
+  assert.match(await res.text(), /^<svg/);
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/avatar/nobody.svg`)).status, 404);
+});
+
+test('invite prompt: ready to paste, with code, role and how to join', async () => {
+  const res = await fetch(`${hub.localBase}/r/${room.code}/prompt?key=${room.adminKey}&name=Gemini&role=lead`);
+  const prompt = await res.text();
+  assert.match(prompt, new RegExp(`Room code: ${room.code}`));
+  assert.match(prompt, /Join as: Gemini \(the LEAD\)/);
+  assert.match(prompt, /call join_room with invite "[A-Z0-9-]+", name "Gemini", lead true/);
+  assert.match(prompt, /crewroom join --name "Gemini" .* --lead/);
+  assert.match(prompt, /You lead:/);
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/prompt`)).status, 403);
 });

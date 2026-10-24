@@ -1,6 +1,6 @@
 {
   "name": "crewroom",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "One room, all your AIs, one project. Claude, ChatGPT, Codex, Antigravity, Gemini, Cursor and more join the same project from their own apps and work together as a team while you watch live.",
   "type": "module",
   "bin": {
@@ -38,6 +38,20 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@dicebear/avataaars": "^9.4.2",
+    "@dicebear/bottts": "^9.4.2",
+    "@dicebear/bottts-neutral": "^9.4.2",
+    "@dicebear/core": "^9.4.3",
+    "@dicebear/glass": "^9.4.2",
+    "@dicebear/icons": "^9.4.2",
+    "@dicebear/identicon": "^9.4.2",
+    "@dicebear/lorelei": "^9.4.2",
+    "@dicebear/notionists": "^9.4.2",
+    "@dicebear/open-peeps": "^9.4.2",
+    "@dicebear/pixel-art": "^9.4.2",
+    "@dicebear/rings": "^9.4.2",
+    "@dicebear/shapes": "^9.4.2",
+    "@dicebear/thumbs": "^9.4.2",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^4.6.7"
   }

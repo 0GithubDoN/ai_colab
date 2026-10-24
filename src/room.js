@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { newRoomCode, secret, shortId, guessMime, download, PROJECT_DIR, readJson, writeJson } from './util.js';
 import { runShell, gitChanges } from './exec.js';
+import { parseAvatar } from './avatars.js';
 
 const MAX_MESSAGES_KEPT = 5000;
 const MAX_READ_CHARS = 200_000;
@@ -28,7 +29,15 @@ export class RoomError extends Error {
 
 const now = () => Date.now();
 let backupSeq = 0;
-const DEFAULT_SETTINGS = { leadAwayMinutes: 10, onlineSeconds: 180, commands: 'ask' };
+const WORKING_MS = 5 * 60_000; // "working" if it acted in the room within this time
+const MAX_BATCH = 25; // messages per wait; the rest stay queued for the next call
+const MAX_MESSAGE_CHARS = 1500; // longer messages are trimmed in wait results (read_message gets all)
+const SUMMARY_NUDGE = 80; // ask the lead for a summary after this many messages
+// What a paused member may not do through the room (it can still read, wait and talk).
+const PAUSE_BLOCKS = new Set(['write_file', 'edit_file', 'restore_file', 'claim_file', 'save_asset', 'share_file', 'run_command', 'take_task', 'finish_task', 'ask', 'set_brief', 'set_summary']);
+// onlineSeconds: how long after its last contact an AI still counts as connected. Long, because
+// AIs often think or work for many minutes without touching the room.
+const DEFAULT_SETTINGS = { leadAwayMinutes: 10, onlineSeconds: 1800, commands: 'ask', readUsage: true };
 
 export class Room extends EventEmitter {
   constructor({ projectRoot, name }) {
@@ -58,7 +67,9 @@ export class Room extends EventEmitter {
     if (saved) {
       this.s = saved;
       this.s.settings = { ...DEFAULT_SETTINGS, ...saved.settings };
+      if (this.s.settings.onlineSeconds === 180) this.s.settings.onlineSeconds = DEFAULT_SETTINGS.onlineSeconds; // old default
       this.s.commands ||= [];
+      this.s.memory ||= [];
       for (const c of this.s.commands) if (c.status === 'pending') c.status = 'expired';
     } else {
       this.s = {
@@ -77,10 +88,11 @@ export class Room extends EventEmitter {
         tasks: {},
         claims: {},
         notes: [],
+        memory: [],
         assets: {},
         commands: [],
       };
-      this._system(`Room "${this.s.name}" created.`);
+      this._system(`Room "${this.s.name}" created.`, null, { quiet: true });
       this._save(true);
     }
     if (name && name !== this.s.name) this.s.name = name;
@@ -168,10 +180,95 @@ export class Room extends EventEmitter {
     return (m._waiting || 0) > 0 || now() - (m.lastSeen || 0) < this.s.settings.onlineSeconds * 1000;
   }
 
+  /** listening (waiting for news) · working (acting on something) · idle · away · offline */
   memberStatus(m) {
     if (m.status === 'away') return 'away';
     if ((m._waiting || 0) > 0) return 'listening';
-    return this.isOnline(m) ? 'online' : 'offline';
+    const since = now() - (m.lastSeen || 0);
+    if (m.phase === 'working' && since < WORKING_MS) return 'working';
+    return since < this.s.settings.onlineSeconds * 1000 ? 'idle' : 'offline';
+  }
+
+  /** "focus" members only get what concerns them; "all" members get every message. The lead defaults to all. */
+  listenOf(m) {
+    return m.listen || (m.id === this.s.leadId ? 'all' : 'focus');
+  }
+
+  _concerns(member, m) {
+    if (m.to === member.id) return true;
+    if (this.listenOf(member) === 'all') return true;
+    if (m.kind === 'system') return !m.quiet;
+    if (m.from === HUMAN_ID || m.from === this.s.leadId) return true;
+    if (mentions(m.text, member.name) || mentions(m.text, 'everyone') || mentions(m.text, 'all')) return true;
+    if (m.taskId) {
+      const t = this.s.tasks[m.taskId];
+      if (!t || t.status === 'open' || t.to === member.id || t.from === member.id || t.owner === member.id) return true;
+    }
+    return false;
+  }
+
+  /** Approximate what the room costs each AI: characters in/out (≈ 4 characters per token). */
+  account(member, inChars = 0, outChars = 0, savedChars = 0) {
+    if (!member || member.id === HUMAN_ID || !this.s.members[member.id]) return;
+    const t = (member.traffic ||= { in: 0, out: 0, saved: 0 });
+    t.in += inChars;
+    t.out += outChars;
+    t.saved += savedChars;
+    this._save();
+  }
+
+  /** Attach token usage read from local app logs (see usage.js) to the members using those apps. */
+  applyUsage(entries) {
+    const taken = new Set();
+    let changed = false;
+    const members = Object.values(this.s.members).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+    for (const m of members) {
+      const kind = appKind(m);
+      const pick = kind && entries.find((e) => e.source === kind && !taken.has(e.sessionId || e.file) && (e.updatedAt || 0) > (m.joinedAt || 0) - 6 * 3600_000);
+      if (pick) taken.add(pick.sessionId || pick.file);
+      const next = pick ? JSON.stringify(pick) : null;
+      if (next !== (m._usage ? JSON.stringify(m._usage) : null)) {
+        m._usage = pick || null;
+        changed = true;
+      }
+    }
+    if (changed) this.emit('change', 'usage');
+  }
+
+  _usageOf(m) {
+    const logs = m._usage;
+    const rep = m.reported && now() - m.reported.ts < 6 * 3600_000 ? m.reported : null;
+    if (!logs && !rep) return null;
+    return {
+      source: logs ? (logs.via === 'statusline' ? 'Claude Code status line' : logs.source === 'codex' ? 'Codex logs' : 'Claude Code logs') : 'self-reported',
+      contextPct: logs?.contextPct ?? rep?.contextPct,
+      contextWindow: logs?.contextWindow,
+      tokensIn: logs?.tokensIn,
+      tokensOut: logs?.tokensOut,
+      costUsd: logs?.costUsd,
+      session: logs?.limits?.session || (rep?.sessionPct !== undefined ? { used: rep.sessionPct } : undefined),
+      weekly: logs?.limits?.weekly || (rep?.weeklyPct !== undefined ? { used: rep.weeklyPct } : undefined),
+      plan: logs?.plan,
+      note: rep?.note,
+      updatedAt: logs?.updatedAt || rep?.ts,
+    };
+  }
+
+  /** Messages waiting for a member that is not currently listening (it may need a nudge in its app). */
+  _unread(m) {
+    let n = 0;
+    for (let i = this.s.messages.length - 1; i >= 0 && n < 99; i--) {
+      const msg = this.s.messages[i];
+      if (msg.seq <= (m.cursor || 0)) break;
+      if (this._relevantFor(m, msg) && this._concerns(m, msg)) n++;
+    }
+    return n;
+  }
+
+  _modelOf(m) {
+    if (m._usage?.model) return { model: m._usage.model, source: 'logs' };
+    if (m.model) return { model: m.model, source: 'self' };
+    return { model: null, source: null };
   }
 
   leadStatus() {
@@ -207,16 +304,28 @@ export class Room extends EventEmitter {
     return msg;
   }
 
-  _system(text, to = null) {
-    return this._addMessage({ from: 'system', to, text, kind: 'system' });
+  /** quiet = routine update (joined, editing a file...): shown on the dashboard, not sent to members in focus mode. */
+  _system(text, to = null, { quiet = false } = {}) {
+    const msg = this._addMessage({ from: 'system', to, text, kind: 'system' });
+    if (quiet) msg.quiet = true;
+    return msg;
   }
 
-  _formatMessage(m, forMember) {
-    const out = { seq: m.seq, time: new Date(m.ts).toISOString(), from: this._nameOf(m.from), to: m.to ? this._nameOf(m.to) : 'everyone', kind: m.kind, text: m.text };
+  _formatMessage(m, forMember, { maxChars } = {}) {
+    let text = m.text;
+    if (maxChars && text.length > maxChars) text = `${text.slice(0, maxChars)} …[${text.length} chars; read_message ${m.seq} for the rest]`;
+    const out = { seq: m.seq, time: new Date(m.ts).toISOString(), from: this._nameOf(m.from), to: m.to ? this._nameOf(m.to) : 'everyone', kind: m.kind, text };
     if (m.taskId) out.task_id = m.taskId;
     if (m.attachments) out.attachments = m.attachments.map((a) => this._assetInfo(a)).filter(Boolean);
-    if (forMember && m.to === null && new RegExp(`@${escapeRe(forMember.name)}\\b`, 'i').test(m.text)) out.mentions_you = true;
+    if (forMember && m.to === null && mentions(m.text, forMember.name)) out.mentions_you = true;
     return out;
+  }
+
+  /** Messages after `seq` for the dashboard (incremental updates). */
+  dashboardMessages({ after = 0, before, limit = 200 } = {}) {
+    let list = this.s.messages.filter((m) => m.seq > after && (!before || m.seq < before));
+    list = list.slice(-limit);
+    return list.map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to, quiet: m.quiet || undefined }));
   }
 
   _relevantFor(member, m) {
@@ -343,22 +452,32 @@ export class Room extends EventEmitter {
   // ---------- snapshot (dashboard) ----------
 
   snapshot({ messageLimit = 400 } = {}) {
+    const members = Object.values(this.s.members);
+    const sum = (k) => members.reduce((n, m) => n + (m.traffic?.[k] || 0), 0);
     return {
       code: this.code,
       name: this.s.name,
       brief: this.s.brief,
+      summary: this.s.summary ? { ...this.s.summary, by: this._nameOf(this.s.summary.by), messagesSince: this.s.seq - this.s.summary.seq } : null,
       paused: this.s.paused,
       settings: this.s.settings,
       projectRoot: this.projectRoot,
       lead: this.leadStatus(),
-      members: Object.values(this.s.members).map((m) => ({
-        id: m.id, name: m.name, app: m.app, model: m.model, via: m.via, capabilities: m.capabilities,
-        role: m.id === this.s.leadId ? 'lead' : 'member', status: this.memberStatus(m), activity: m.activity, lastSeen: m.lastSeen, joinedAt: m.joinedAt,
+      stats: { messages: this.s.seq, tokensSent: Math.round((sum('out') + sum('in')) / 4), tokensSaved: Math.round(sum('saved') / 4) },
+      members: members.map((m) => ({
+        id: m.id, name: m.name, app: m.app, via: m.via, capabilities: m.capabilities, client: m.client,
+        avatar: m.avatar ? `/r/${this.code}/avatar/${encodeURIComponent(m.id)}.svg?v=${encodeURIComponent(`${m.avatar.style}:${m.avatar.seed}`)}` : null,
+        ...this._modelOf(m),
+        role: m.id === this.s.leadId ? 'lead' : 'member', status: this.memberStatus(m), activity: m.activity, lastAction: m.lastAction,
+        lastSeen: m.lastSeen, joinedAt: m.joinedAt, listen: this.listenOf(m), usage: this._usageOf(m), unread: this._unread(m),
+        paused: m.paused ? { by: this._nameOf(m.paused.by), reason: m.paused.reason, stopped: m.paused.stopped } : null,
+        traffic: { tokensIn: Math.round((m.traffic?.in || 0) / 4), tokensOut: Math.round((m.traffic?.out || 0) / 4), tokensSaved: Math.round((m.traffic?.saved || 0) / 4) },
       })),
-      messages: this.s.messages.slice(-messageLimit).map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to })),
+      messages: messageLimit ? this.dashboardMessages({ limit: messageLimit }) : [],
       tasks: Object.values(this.s.tasks).sort((a, b) => b.updatedAt - a.updatedAt).map((t) => this._taskInfo(t)),
       claims: Object.entries(this.s.claims).map(([p, c]) => ({ path: p, by: this._nameOf(c.memberId), note: c.note, since: c.ts })),
       notes: this.s.notes.slice(-200).map((n) => ({ ...n, from: this._nameOf(n.from) })),
+      memory: this.s.memory.slice(-300).map((e) => ({ ...e, by: this._nameOf(e.by) })).reverse(),
       assets: Object.keys(this.s.assets).map((id) => this._assetInfo(id)).reverse(),
       commands: this.s.commands.slice(-30).map((c) => this._commandInfo(c)).reverse(),
     };
@@ -377,13 +496,24 @@ export class Room extends EventEmitter {
       let announced = false;
       if (actor.status === 'away' && action !== 'set_activity') {
         actor.status = 'online';
-        this._system(`${actor.name} is back.`);
+        this._system(`${actor.name} is back.`, null, { quiet: actor.id !== this.s.leadId });
         announced = true;
       }
       if (actor.id === this.s.leadId && action !== 'set_activity') {
         if (!announced && this._lastLeadStatus?.endsWith(':away')) this._system(`The lead (${actor.name}) is back.`);
         this._syncLead();
       }
+      if (action !== 'wait') {
+        const label = describeAction(action, args || {});
+        if (label && (label !== actor.lastAction || actor.phase !== 'working')) {
+          actor.phase = 'working';
+          actor.lastAction = label;
+          this.emit('change', 'member');
+        }
+      }
+    }
+    if (actor && actor.paused && PAUSE_BLOCKS.has(action)) {
+      throw new RoomError(`You are paused by ${this._nameOf(actor.paused.by)}${actor.paused.reason ? ` (${actor.paused.reason})` : ''}. Stop what you are doing; do not change files. Call wait_for_updates and wait to be resumed.`, 423);
     }
     return fn.call(this, actor, args || {});
   }
@@ -410,9 +540,15 @@ export class Room extends EventEmitter {
       lead: this.leadStatus(),
       brief: this.s.brief || '(no brief yet)',
       project_folder: this.projectRoot,
-      members: Object.values(this.s.members).map((m) => ({ name: m.name, app: m.app, capabilities: m.capabilities, role: m.id === this.s.leadId ? 'lead' : 'member', status: this.memberStatus(m) })),
+      members: Object.values(this.s.members).map((m) => ({ name: m.name, app: m.app, model: this._modelOf(m).model || undefined, capabilities: m.capabilities, role: m.id === this.s.leadId ? 'lead' : 'member', status: this.memberStatus(m) })),
+      summary: this.s.summary ? `${this.s.summary.text}\n(by ${this._nameOf(this.s.summary.by)}, ${this.s.seq - this.s.summary.seq} messages ago)` : undefined,
+      memory: this.s.memory.length ? `${this.s.memory.filter((e) => !e.private).length} shared memories: use recall with a few words to find what you need (cheap), instead of asking or rereading.` : undefined,
+      paused: member.paused ? `You are paused by ${this._nameOf(member.paused.by)}. Wait to be resumed.` : undefined,
+      listening: this.listenOf(member) === 'all'
+        ? 'all: you receive every message'
+        : 'focus: you receive direct messages, @mentions, your tasks, the lead and the human; other chatter is summarized as a count (saves tokens). Use set_focus to change.',
       rules: RULES,
-      next_step: 'Say hello with send_message (one line: who you are and what you can do), then call wait_for_updates in a loop.',
+      next_step: 'Say hello with send_message (one line: who you are, your model, what you can do), then call wait_for_updates in a loop.',
     };
   }
 
@@ -425,7 +561,7 @@ export class Room extends EventEmitter {
     this._changed('command');
     const r = await runShell(c.command, { cwd: this.projectRoot, timeoutMs: timeoutSec * 1000 });
     Object.assign(c, { status: r.timedOut ? 'timed_out' : 'finished', exitCode: r.exitCode, durationMs: r.durationMs, stdout: r.stdout, stderr: r.stderr });
-    this._system(`${this._nameOf(c.by)} ran \`${c.command}\` → ${r.timedOut ? 'timed out' : `exit ${r.exitCode}`} (${Math.round(r.durationMs / 100) / 10}s).`);
+    this._system(`${this._nameOf(c.by)} ran \`${c.command}\` → ${r.timedOut ? 'timed out' : `exit ${r.exitCode}`} (${Math.round(r.durationMs / 100) / 10}s).`, null, { quiet: true });
     this._changed('command');
   }
 
@@ -457,6 +593,49 @@ export class Room extends EventEmitter {
     return this._commandResult(c);
   }
 
+  /** Wait (up to waitSeconds) until a task is done, blocked or cancelled. */
+  async _awaitTask(t, waitSeconds) {
+    const deadline = now() + Math.min(Math.max(waitSeconds, 0), MAX_WAIT_SECONDS) * 1000;
+    const finished = () => ['done', 'blocked', 'cancelled'].includes(t.status);
+    while (!finished() && now() < deadline && !this._closed) {
+      await new Promise((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          this.off('change', onChange);
+          this.off('closed', finish);
+          resolve();
+        };
+        const onChange = (kind) => { if (kind === 'message' && finished()) finish(); };
+        const timer = setTimeout(finish, Math.max(0, deadline - now()));
+        this.on('change', onChange);
+        this.once('closed', finish);
+      });
+    }
+  }
+
+  /**
+   * Choose who should get an "auto" task: able (capability matches), reachable, least busy,
+   * and furthest from its usage limits. Spreads work so no single AI burns through its quota.
+   */
+  _pickMember(capability, asker) {
+    const want = String(capability || '').toLowerCase();
+    const busy = (m) => Object.values(this.s.tasks).filter((t) => (t.owner === m.id || t.to === m.id) && !['done', 'cancelled'].includes(t.status)).length;
+    const candidates = Object.values(this.s.members).filter((m) => {
+      if (m.id === asker.id) return false;
+      const st = this.memberStatus(m);
+      if (st === 'offline' || st === 'away') return false;
+      return !want || (m.capabilities || []).some((c) => c.toLowerCase().includes(want) || want.includes(c.toLowerCase()));
+    });
+    if (!candidates.length) throw new RoomError(want ? `Nobody available can do "${want}". Members: ${Object.values(this.s.members).map((m) => `${m.name} (${(m.capabilities || []).join(', ') || 'no capabilities listed'})`).join('; ')}` : 'Nobody else is available right now.', 409);
+    const score = (m) => {
+      const u = this._usageOf(m);
+      const limit = Math.max(u?.session?.used || 0, u?.weekly?.used || 0);
+      const st = this.memberStatus(m);
+      return busy(m) * 10 + limit / 10 + (st === 'listening' ? 0 : st === 'idle' ? 2 : 4);
+    };
+    return candidates.sort((a, b) => score(a) - score(b))[0].id;
+  }
+
   /** Record the lead's current state so _tick() does not announce a change we already announced. */
   _syncLead() {
     const st = this.leadStatus();
@@ -466,14 +645,17 @@ export class Room extends EventEmitter {
 
 // Every function runs with `this` = Room.
 const ACTIONS = {
-  join(_actor, { name, app, model, capabilities, via, lead, token }) {
+  join(_actor, { name, app, model, capabilities, via, lead, token, listen, client, avatar }) {
+    const clientInfo = client && typeof client === 'object' && client.name ? { name: String(client.name).slice(0, 60), version: client.version ? String(client.version).slice(0, 30) : undefined } : undefined;
     if (token) {
       const existing = this.memberByToken(token);
       if (existing) {
         existing.status = 'online';
         existing.lastSeen = now();
         if (via) existing.via = via;
-        this._system(`${existing.name} reconnected.`);
+        if (model) existing.model = String(model).slice(0, 60);
+        if (clientInfo) existing.client = clientInfo;
+        this._system(`${existing.name} reconnected.`, null, { quiet: true });
         return this._welcome(existing);
       }
     }
@@ -490,26 +672,38 @@ const ACTIONS = {
       member.status = 'online';
       member.lastSeen = now();
       if (app) member.app = app;
-      if (model) member.model = model;
+      if (model) member.model = String(model).slice(0, 60);
       if (capabilities) member.capabilities = toList(capabilities);
       if (via) member.via = via;
-      this._system(`${member.name} rejoined${app ? ` from ${app}` : ''}.`);
+      if (clientInfo) member.client = clientInfo;
+      this._system(`${member.name} rejoined${app ? ` from ${app}` : ''}.`, null, { quiet: true });
     } else {
       let id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || shortId(6).toLowerCase();
       if (this.s.members[id] || id === HUMAN_ID) id = `${id}-${shortId(3).toLowerCase()}`;
       member = {
-        id, name, app: app || 'unknown app', model: model || undefined, via: via || 'cli', capabilities: toList(capabilities),
-        token: randomUUID(), joinedAt: now(), lastSeen: now(), status: 'online', cursor: 0, activity: '',
+        id, name, app: app || clientInfo?.name || 'unknown app', model: model ? String(model).slice(0, 60) : undefined, via: via || 'cli', capabilities: toList(capabilities),
+        client: clientInfo, token: randomUUID(), joinedAt: now(), lastSeen: now(), status: 'online', cursor: 0, activity: '',
       };
       this.s.members[id] = member;
-      this._system(`${member.name} joined from ${member.app}${member.capabilities.length ? ` (can: ${member.capabilities.join(', ')})` : ''}.`);
+      this._system(`${member.name} joined from ${member.app}${member.model ? ` (${member.model})` : ''}${member.capabilities.length ? `, can: ${member.capabilities.join(', ')}` : ''}.`, null, { quiet: true });
     }
+    if (listen === 'all' || listen === 'focus') member.listen = listen;
+    if (avatar) {
+      try {
+        member.avatar = parseAvatar(avatar, member.name);
+      } catch (err) {
+        throw new RoomError(err.message);
+      }
+    }
+    member.avatar ||= { style: 'bottts', seed: member.name };
     if (lead && (!this.s.leadId || !this.s.members[this.s.leadId])) {
       this.s.leadId = member.id;
       this._system(`${member.name} is the lead.`);
     }
-    // Start a little back in history so the newcomer has context.
-    member.cursor = Math.max(0, this.s.seq - 30);
+    // Start a little back in history so the newcomer has context (less if there is a summary to read).
+    member.cursor = Math.max(0, this.s.seq - (this.s.summary ? 10 : 30));
+    member.phase = 'working';
+    member.lastAction = 'joining';
     this._changed('member');
     return this._welcome(member);
   },
@@ -523,10 +717,18 @@ const ACTIONS = {
       paused: snap.paused,
       you: actor.name,
       lead: snap.lead,
-      members: snap.members.map((m) => ({ name: m.name, app: m.app, role: m.role, status: m.status, capabilities: m.capabilities, doing: m.activity || undefined })),
-      tasks: snap.tasks.filter((t) => !['done', 'cancelled'].includes(t.status)),
-      files_being_edited: snap.claims,
+      summary: snap.summary?.text,
+      members: snap.members.map((m) => ({
+        name: m.name, app: m.app, model: m.model || undefined, role: m.role, status: m.paused ? `${m.status}, PAUSED` : m.status, capabilities: m.capabilities,
+        doing: m.activity || m.lastAction || undefined,
+        // Lets the lead route work away from someone close to a usage limit.
+        usage: m.usage ? compact({ context: fmtPct(m.usage.contextPct), session_limit: fmtPct(m.usage.session?.used), weekly_limit: fmtPct(m.usage.weekly?.used) }) : undefined,
+      })),
+      tasks: snap.tasks.filter((t) => !['done', 'cancelled'].includes(t.status)).map((t) => compact({ id: t.id, kind: t.kind, title: t.title, from: t.from, to: t.owner || t.assigned_to, status: t.status })),
+      files_being_edited: snap.claims.map((c) => `${c.path} (${c.by})`),
       decisions: snap.notes.filter((n) => n.kind === 'decision').slice(-15).map((n) => n.text),
+      notes: snap.notes.filter((n) => n.kind !== 'decision').slice(-5).map((n) => `${n.text} (${n.from})`),
+      shared_files: snap.assets.slice(0, 8).map((a) => `${a.id} ${a.name} from ${a.from}`),
       commands_allowed: snap.settings.commands,
     };
   },
@@ -534,62 +736,152 @@ const ACTIONS = {
   async wait(actor, { timeout_seconds = 60, include_history = 0 } = {}) {
     if (actor.id === HUMAN_ID) throw new RoomError('The human does not need to wait.');
     const timeoutMs = Math.min(Math.max(Number(timeout_seconds) || 0, 0), MAX_WAIT_SECONDS) * 1000;
-    const collect = () => this.s.messages.filter((m) => m.seq > actor.cursor && this._relevantFor(actor, m));
-    let msgs = collect();
-    if (!msgs.length && timeoutMs > 0) {
+    // Everything this member could see since its cursor, split into what concerns it and the rest.
+    const scan = () => {
+      const deliver = [];
+      const skipped = [];
+      for (const m of this.s.messages) {
+        if (m.seq <= actor.cursor || !this._relevantFor(actor, m)) continue;
+        (this._concerns(actor, m) ? deliver : skipped).push(m);
+      }
+      return { deliver, skipped };
+    };
+    let { deliver, skipped } = scan();
+    if (!deliver.length && timeoutMs > 0) {
       actor._waiting = (actor._waiting || 0) + 1;
+      actor.phase = 'listening';
       this.emit('change', 'member');
       try {
-        msgs = await new Promise((resolve) => {
+        ({ deliver, skipped } = await new Promise((resolve) => {
           const finish = () => {
             clearTimeout(timer);
             this.off('change', onChange);
             this.off('closed', finish);
-            resolve(collect());
+            resolve(scan());
           };
-          const onChange = (kind) => { if (kind === 'message' && collect().length) finish(); };
+          // Only wake up for something that concerns this member, not for every message.
+          const onChange = (kind) => { if (kind === 'message' && scan().deliver.length) finish(); };
           const timer = setTimeout(finish, timeoutMs);
           this.on('change', onChange);
           this.once('closed', finish);
-        });
+        }));
       } finally {
         actor._waiting = Math.max(0, (actor._waiting || 1) - 1);
         actor.lastSeen = now();
-        this.emit('change', 'member');
       }
     }
-    actor.cursor = msgs.length ? msgs[msgs.length - 1].seq : Math.max(actor.cursor, this.s.seq);
-    this._save();
+
+    // Deliver at most MAX_BATCH messages; the rest stay queued for the next wait.
+    const batch = deliver.slice(0, MAX_BATCH);
+    const queued = deliver.length - batch.length;
+    const upTo = queued ? batch[batch.length - 1].seq : this.s.seq;
+    const skippedNow = skipped.filter((m) => m.seq <= upTo);
+    actor.cursor = Math.max(actor.cursor, upTo);
+    if (batch.length) {
+      actor.phase = 'working';
+      actor.lastAction = 'reading new messages';
+    }
+    this.emit('change', 'member');
+
     const history = include_history > 0
-      ? this.s.messages.filter((m) => m.seq < (msgs[0]?.seq ?? Infinity) && (m.to === null || m.to === actor.id || m.from === actor.id)).slice(-Math.min(include_history, 100)).map((m) => this._formatMessage(m, actor))
+      ? this.s.messages.filter((m) => m.seq < (batch[0]?.seq ?? Infinity) && (m.to === null || m.to === actor.id || m.from === actor.id)).slice(-Math.min(include_history, 50)).map((m) => this._formatMessage(m, actor, { maxChars: 400 }))
       : undefined;
     const tasks = this._tasksFor(actor);
+    const seenAt = actor.tasksSeenAt || 0;
+    actor.tasksSeenAt = now();
     const lead = this.leadStatus();
-    return {
-      new_messages: msgs.map((m) => this._formatMessage(m, actor)),
+    const chatter = skippedNow.filter((m) => m.kind !== 'system');
+    const result = {
+      new_messages: batch.map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })),
+      queued: queued || undefined,
+      other_messages: chatter.length ? { count: chatter.length, between: [...new Set(chatter.map((m) => this._nameOf(m.from)))] } : undefined,
       history,
-      your_tasks: tasks.mine,
-      open_tasks_anyone_can_take: tasks.open,
+      // Full details only for tasks that are new or changed since the last wait.
+      your_tasks: tasks.mine.map((t) => (Date.parse(t.updated) > seenAt ? { ...t, changed: true } : { id: t.id, kind: t.kind, title: t.title, status: t.status, from: t.from })),
+      open_tasks_anyone_can_take: tasks.open.map((t) => ({ id: t.id, kind: t.kind, title: t.title, from: t.from })),
       lead,
       paused: this.s.paused,
-      guidance: guidance(this, actor, lead, msgs, tasks),
+      guidance: guidance(this, actor, lead, batch, tasks, queued),
     };
+    this.account(actor, 0, 0, skippedNow.reduce((n, m) => n + m.text.length + 60, 0));
+    return result;
   },
 
-  read_messages(actor, { limit = 50, before_seq } = {}) {
+  read_messages(actor, { limit = 30, before_seq, from } = {}) {
     let list = this.s.messages;
     if (before_seq) list = list.filter((m) => m.seq < before_seq);
     if (actor.id !== HUMAN_ID) list = list.filter((m) => m.to === null || m.to === actor.id || m.from === actor.id);
-    return { messages: list.slice(-Math.min(Number(limit) || 50, 300)).map((m) => this._formatMessage(m, actor)) };
+    if (from) {
+      const id = this._resolveTarget(from);
+      list = list.filter((m) => m.from === id);
+    }
+    return { messages: list.slice(-Math.min(Number(limit) || 30, 200)).map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })) };
+  },
+
+  read_message(actor, { seq }) {
+    const m = this.s.messages.find((x) => x.seq === Number(seq));
+    if (!m || (actor.id !== HUMAN_ID && m.to !== null && m.to !== actor.id && m.from !== actor.id)) throw new RoomError(`No message #${seq}.`, 404);
+    return { message: this._formatMessage(m, actor) };
+  },
+
+  set_summary(actor, { text }) {
+    if (!text || !String(text).trim()) throw new RoomError('Summary text is empty.');
+    this.s.summary = { text: cleanText(text, 6000, 'Summary').text, by: actor.id, ts: now(), seq: this.s.seq };
+    this._system(`${this._nameOf(actor.id)} updated the room summary. Newcomers read it instead of the full history.`, null, { quiet: true });
+    return { saved: true, note: 'Thanks. Everyone who joins or returns gets this summary first.' };
+  },
+
+  set_focus(actor, { mode, name }) {
+    if (!['all', 'focus'].includes(mode)) throw new RoomError('mode must be "focus" or "all".');
+    let target = actor;
+    if (name) {
+      if (actor.id !== HUMAN_ID && actor.id !== this.s.leadId) throw new RoomError('Only the lead or the human can change someone else\'s focus.', 403);
+      target = this.memberByName(name);
+      if (!target) throw new RoomError(`No member named "${name}".`);
+    } else if (actor.id === HUMAN_ID) throw new RoomError('Give the member name.');
+    target.listen = mode;
+    this._changed('member');
+    return { name: target.name, listening: mode };
+  },
+
+  report_usage(actor, { context_used_percent, session_limit_used_percent, weekly_limit_used_percent, model, note }) {
+    if (actor.id === HUMAN_ID) throw new RoomError('Only agents report usage.');
+    const p = (v) => (v === undefined || v === null || v === '' ? undefined : Math.max(0, Math.min(100, Number(v))));
+    actor.reported = compact({ contextPct: p(context_used_percent), sessionPct: p(session_limit_used_percent), weeklyPct: p(weekly_limit_used_percent), note: note ? String(note).slice(0, 200) : undefined, ts: now() });
+    if (model) actor.model = String(model).slice(0, 60);
+    this._changed('member');
+    return { saved: true };
   },
 
   send(actor, { text, to, attachments }) {
     if (!text || !String(text).trim()) throw new RoomError('Message text is empty.');
+    const clean = cleanText(text, 20_000, 'Message');
     this._flood(actor);
     const target = this._resolveTarget(to);
     const att = toList(attachments).filter((id) => this.s.assets[id]);
-    const msg = this._addMessage({ from: actor.id, to: target, text: String(text).slice(0, 20_000), attachments: att });
-    return { sent: true, seq: msg.seq, to: target ? this._nameOf(target) : 'everyone' };
+    const msg = this._addMessage({ from: actor.id, to: target, text: clean.text, attachments: att });
+    return compact({ sent: true, seq: msg.seq, to: target ? this._nameOf(target) : 'everyone', warning: clean.warning });
+  },
+
+  update_me(actor, { activity, status, focus, model, avatar, context_used_percent, session_limit_used_percent, weekly_limit_used_percent, usage_note }) {
+    if (actor.id === HUMAN_ID) throw new RoomError('Only agents have a profile.');
+    const out = {};
+    if (avatar !== undefined) {
+      try {
+        actor.avatar = parseAvatar(avatar, actor.name);
+      } catch (err) {
+        throw new RoomError(err.message);
+      }
+      out.avatar = `${actor.avatar.style}:${actor.avatar.seed}`;
+    }
+    if (model) actor.model = String(model).slice(0, 60);
+    if (focus) Object.assign(out, ACTIONS.set_focus.call(this, actor, { mode: focus }));
+    if ([context_used_percent, session_limit_used_percent, weekly_limit_used_percent, usage_note].some((v) => v !== undefined)) {
+      ACTIONS.report_usage.call(this, actor, { context_used_percent, session_limit_used_percent, weekly_limit_used_percent, note: usage_note });
+    }
+    if (activity !== undefined || status) Object.assign(out, ACTIONS.set_activity.call(this, actor, { activity, status }));
+    this._changed('member');
+    return { ok: true, ...out };
   },
 
   set_activity(actor, { activity, status }) {
@@ -597,41 +889,62 @@ const ACTIONS = {
     if (activity !== undefined) actor.activity = String(activity).slice(0, 200);
     if (status === 'away' && actor.status !== 'away') {
       actor.status = 'away';
-      this._system(`${actor.name} is away${actor.activity ? `: ${actor.activity}` : ''}.`);
+      this._system(`${actor.name} is away${actor.activity ? `: ${actor.activity}` : ''}.`, null, { quiet: actor.id !== this.s.leadId });
     } else if ((status === 'online' || status === 'back') && actor.status === 'away') {
       actor.status = 'online';
-      this._system(`${actor.name} is back.`);
+      this._system(`${actor.name} is back.`, null, { quiet: actor.id !== this.s.leadId });
     }
     if (actor.id === this.s.leadId) this._syncLead();
     this._changed('member');
     return { ok: true, activity: actor.activity, status: actor.status };
   },
 
-  ask(actor, { to, title, details, kind = 'task', files }) {
+  /**
+   * Hand work to teammates. `to` can be a name, several names ("Gemini, Codex": one task each),
+   * "auto" / "auto:<capability>" (picks whoever is free, able and furthest from a usage limit),
+   * or empty for an open task. With wait_seconds the call waits for the result and returns it.
+   */
+  async ask(actor, { to, title, details, kind = 'task', files, wait_seconds }) {
     if (!title || !String(title).trim()) throw new RoomError('A request needs a short title.');
     this._flood(actor);
-    const target = this._resolveTarget(to);
-    if (target === actor.id) throw new RoomError('You cannot ask yourself.');
-    const t = {
-      id: `T${Object.keys(this.s.tasks).length + 1}`,
-      kind: ['task', 'review', 'question', 'asset', 'research', 'fix'].includes(kind) ? kind : 'task',
-      title: String(title).slice(0, 300),
-      details: details ? String(details).slice(0, 20_000) : '',
-      from: actor.id,
-      to: target,
-      status: target ? 'assigned' : 'open',
-      owner: target || null,
-      files: toList(files),
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    this.s.tasks[t.id] = t;
-    const who = target ? this._nameOf(target) : 'anyone';
-    this._addMessage({
-      from: actor.id, to: target, kind: 'task', taskId: t.id,
-      text: `[${t.id} · ${t.kind} for ${who}] ${t.title}${t.details ? `\n${t.details}` : ''}${t.files.length ? `\nFiles: ${t.files.join(', ')}` : ''}`,
+    const cleanTitle = cleanText(title, 300, 'Task title').text;
+    const cleanDetails = details ? cleanText(details, 20_000, 'Task details').text : '';
+    const names = to === undefined || to === null || to === '' ? [null] : String(to).split(',').map((x) => x.trim()).filter(Boolean);
+    const targets = names.map((n) => {
+      if (n && /^auto(:|$)/i.test(n)) return this._pickMember(n.split(':').slice(1).join(':').trim(), actor);
+      const id = this._resolveTarget(n);
+      if (id && id === actor.id) throw new RoomError('You cannot ask yourself.');
+      return id;
     });
-    return { task: this._taskInfo(t), note: target ? `Sent to ${who}. Their result will come back to you as a message.` : 'Posted as an open task; any member can take it.' };
+    const created = targets.map((target) => {
+      const t = {
+        id: `T${Object.keys(this.s.tasks).length + 1}`,
+        kind: ['task', 'review', 'question', 'asset', 'research', 'fix'].includes(kind) ? kind : 'task',
+        title: cleanTitle, details: cleanDetails, from: actor.id, to: target,
+        status: target ? 'assigned' : 'open', owner: target || null, files: toList(files), createdAt: now(), updatedAt: now(),
+      };
+      this.s.tasks[t.id] = t;
+      const who = target ? this._nameOf(target) : 'anyone';
+      this._addMessage({
+        from: actor.id, to: target, kind: 'task', taskId: t.id,
+        text: `[${t.id} · ${t.kind} for ${who}] ${t.title}${t.details ? `\n${t.details}` : ''}${t.files.length ? `\nFiles: ${t.files.join(', ')}` : ''}`,
+      });
+      return t;
+    });
+    const wait = Number(wait_seconds) || 0;
+    if (wait > 0) await Promise.all(created.map((t) => this._awaitTask(t, wait)));
+    const infos = created.map((t) => this._taskInfo(t));
+    const pending = created.filter((t) => !['done', 'blocked', 'cancelled'].includes(t.status)).length;
+    const note = wait > 0
+      ? (pending ? `${pending} not finished yet; the result will arrive as a message (or call wait_task).` : 'Finished: the result is above.')
+      : created[0].to ? `Sent to ${created.map((t) => this._nameOf(t.to)).join(', ')}. Results come back to you as messages.` : 'Posted as an open task; any member can take it.';
+    return created.length === 1 ? { task: infos[0], note } : { tasks: infos, note };
+  },
+
+  async wait_task(_actor, { task_id, wait_seconds = 45 }) {
+    const t = this._task(task_id);
+    await this._awaitTask(t, Number(wait_seconds) || 0);
+    return { task: this._taskInfo(t) };
   },
 
   take_task(actor, { task_id }) {
@@ -642,7 +955,7 @@ const ACTIONS = {
     t.owner = actor.id;
     t.status = 'in_progress';
     t.updatedAt = now();
-    this._system(`${this._nameOf(actor.id)} is working on ${t.id}: ${t.title}`);
+    this._system(`${this._nameOf(actor.id)} is working on ${t.id}: ${t.title}`, null, { quiet: true });
     return { task: this._taskInfo(t) };
   },
 
@@ -652,16 +965,17 @@ const ACTIONS = {
     const allowed = actor.id === HUMAN_ID || actor.id === this.s.leadId || actor.id === t.from || !t.owner || t.owner === actor.id;
     if (!allowed) throw new RoomError(`${t.id} belongs to ${this._nameOf(t.owner)}.`, 409);
     t.status = status;
-    if (result) t.result = String(result).slice(0, 20_000);
+    const clean = result ? cleanText(result, 20_000, 'Result') : null;
+    if (clean) t.result = clean.text;
     t.attachments = toList(attachments).filter((id) => this.s.assets[id]);
     t.owner ||= actor.id;
     t.updatedAt = now();
     for (const f of t.files || []) if (this.s.claims[f]?.memberId === actor.id) delete this.s.claims[f];
     this._addMessage({
       from: actor.id, to: t.from === actor.id ? null : t.from, kind: 'result', taskId: t.id, attachments: t.attachments,
-      text: `[${t.id} ${status}] ${t.title}${result ? `\n${result}` : ''}`,
+      text: `[${t.id} ${status}] ${t.title}${clean ? `\n${clean.text}` : ''}`,
     });
-    return { task: this._taskInfo(t) };
+    return compact({ task: this._taskInfo(t), warning: clean?.warning });
   },
 
   list_tasks(_actor, { include_done = false } = {}) {
@@ -674,7 +988,7 @@ const ACTIONS = {
     const { rel } = this.safePath(p);
     this._checkClaim(actor, rel);
     this.s.claims[rel] = { memberId: actor.id, ts: now(), note: note ? String(note).slice(0, 200) : '' };
-    this._system(`${this._nameOf(actor.id)} is editing ${rel}${note ? ` (${note})` : ''}.`);
+    this._system(`${this._nameOf(actor.id)} is editing ${rel}${note ? ` (${note})` : ''}.`, null, { quiet: true });
     return { claimed: rel, note: 'Release it with release_file when you are done.' };
   },
 
@@ -684,14 +998,15 @@ const ACTIONS = {
     if (!c) return { released: rel, note: 'was not claimed' };
     if (c.memberId !== actor.id && actor.id !== HUMAN_ID && actor.id !== this.s.leadId) throw new RoomError(`${rel} is claimed by ${this._nameOf(c.memberId)}.`, 409);
     delete this.s.claims[rel];
-    this._system(`${rel} is free again.`);
+    this._system(`${rel} is free again.`, null, { quiet: true });
     return { released: rel };
   },
 
   note(actor, { text, kind = 'note' }) {
     if (!text) throw new RoomError('Note text is empty.');
-    const n = { id: shortId(6), ts: now(), from: actor.id, kind: kind === 'decision' ? 'decision' : 'note', text: String(text).slice(0, 5000) };
+    const n = { id: shortId(6), ts: now(), from: actor.id, kind: kind === 'decision' ? 'decision' : 'note', text: cleanText(text, 5000, 'Note').text };
     this.s.notes.push(n);
+    this.s.memory.push({ id: `M${(this.s.memory.length ? Number(this.s.memory[this.s.memory.length - 1].id.slice(1)) : 0) + 1}`, text: n.text.slice(0, 1000), tags: [], by: actor.id, ts: n.ts, kind: n.kind === 'decision' ? 'decision' : 'fact' });
     if (n.kind === 'decision') this._system(`Decision by ${this._nameOf(actor.id)}: ${n.text}`);
     else this._changed('note');
     return { saved: n.id, kind: n.kind };
@@ -703,7 +1018,7 @@ const ACTIONS = {
 
   set_brief(actor, { brief }) {
     this._leadOrHuman(actor);
-    this.s.brief = String(brief || '').slice(0, 10_000);
+    this.s.brief = cleanText(brief || '', 10_000, 'Brief').text;
     this._system(`${this._nameOf(actor.id)} updated the project brief:\n${this.s.brief}`);
     return { brief: this.s.brief };
   },
@@ -725,6 +1040,84 @@ const ACTIONS = {
     return { paused: this.s.paused };
   },
 
+  /**
+   * Lead or human: pause one member (it can still read and talk, but not change anything
+   * through the room), stop it (pause + release its files + reopen its unfinished tasks),
+   * or resume it.
+   */
+  control_member(actor, { name, action, reason }) {
+    this._leadOrHuman(actor, true);
+    const m = this.memberByName(name);
+    if (!m) throw new RoomError(`No member named "${name}".`);
+    if (m.id === actor.id) throw new RoomError('You cannot pause or stop yourself; use update_me with status away.');
+    const why = reason ? String(reason).slice(0, 300) : '';
+    if (action === 'resume') {
+      if (!m.paused) return { name: m.name, note: 'was not paused' };
+      delete m.paused;
+      this._addMessage({ from: 'system', to: m.id, kind: 'system', text: `▶ ${this._nameOf(actor.id)} resumed you. Carry on${why ? `: ${why}` : '.'}` });
+      this._system(`${m.name} was resumed by ${this._nameOf(actor.id)}.`, null, { quiet: true });
+      return { name: m.name, resumed: true };
+    }
+    if (action !== 'pause' && action !== 'stop') throw new RoomError('action must be pause, stop or resume.');
+    m.paused = { by: actor.id, reason: why, ts: now(), stopped: action === 'stop' };
+    const reopened = [];
+    if (action === 'stop') {
+      for (const [p, c] of Object.entries(this.s.claims)) if (c.memberId === m.id) delete this.s.claims[p];
+      for (const t of Object.values(this.s.tasks)) {
+        if ((t.owner === m.id || t.to === m.id) && !['done', 'cancelled', 'blocked'].includes(t.status)) {
+          Object.assign(t, { status: 'open', owner: null, to: null, updatedAt: now() });
+          reopened.push(t.id);
+        }
+      }
+    }
+    this._addMessage({
+      from: 'system', to: m.id, kind: 'system',
+      text: `⏸ ${this._nameOf(actor.id)} ${action === 'stop' ? 'STOPPED' : 'PAUSED'} you${why ? `: ${why}` : '.'} Stop what you are doing now and do not change any files. ${action === 'stop' ? 'Your tasks were taken back. ' : ''}Call wait_for_updates and wait to be resumed.`,
+    });
+    this._system(`${m.name} was ${action === 'stop' ? 'stopped' : 'paused'} by ${this._nameOf(actor.id)}${why ? ` (${why})` : ''}${reopened.length ? `; reopened ${reopened.join(', ')}` : ''}.`);
+    return { name: m.name, [action === 'stop' ? 'stopped' : 'paused']: true, reopened_tasks: reopened.length ? reopened : undefined };
+  },
+
+  /**
+   * Shared memory that costs few tokens: AIs store short facts and recall only the few
+   * that match a query, instead of rereading the chat. private = only you can recall it.
+   */
+  remember(actor, { text, tags, private: priv = false, kind = 'fact' }) {
+    if (!text || !String(text).trim()) throw new RoomError('Nothing to remember.');
+    const entry = {
+      id: `M${(this.s.memory.length ? Number(this.s.memory[this.s.memory.length - 1].id.slice(1)) : 0) + 1}`,
+      text: cleanText(text, 1000, 'Memory').text, tags: toList(tags).slice(0, 8), by: actor.id, ts: now(),
+      kind: ['fact', 'decision', 'preference', 'todo', 'lesson'].includes(kind) ? kind : 'fact',
+      private: priv && actor.id !== HUMAN_ID ? true : undefined,
+    };
+    this.s.memory.push(entry);
+    if (this.s.memory.length > 2000) this.s.memory.splice(0, this.s.memory.length - 2000);
+    if (entry.kind === 'decision' && !entry.private) this._system(`Decision by ${this._nameOf(actor.id)}: ${entry.text}`);
+    else this._changed('memory');
+    return { saved: entry.id, note: 'Recall it later with recall (search words), so nobody has to keep it in context.' };
+  },
+
+  recall(actor, { query, limit = 5, tags } = {}) {
+    const visible = this.s.memory.filter((e) => !e.private || e.by === actor.id || actor.id === HUMAN_ID);
+    const wantTags = toList(tags).map((t) => t.toLowerCase());
+    const pool = wantTags.length ? visible.filter((e) => e.tags?.some((t) => wantTags.includes(t.toLowerCase()))) : visible;
+    const ranked = rankMemory(pool, query).slice(0, Math.min(Number(limit) || 5, 20));
+    return {
+      memories: ranked.map((e) => compact({ id: e.id, text: e.text, kind: e.kind !== 'fact' ? e.kind : undefined, tags: e.tags?.length ? e.tags : undefined, by: this._nameOf(e.by), private: e.private })),
+      total: visible.length,
+    };
+  },
+
+  forget(actor, { id }) {
+    const i = this.s.memory.findIndex((e) => e.id === String(id).toUpperCase());
+    if (i < 0) throw new RoomError(`No memory ${id}.`, 404);
+    const e = this.s.memory[i];
+    if (e.by !== actor.id && actor.id !== HUMAN_ID && actor.id !== this.s.leadId) throw new RoomError('Only its author, the lead or the human can forget this.', 403);
+    this.s.memory.splice(i, 1);
+    this._changed('memory');
+    return { forgotten: e.id };
+  },
+
   kick(actor, { name }) {
     this._leadOrHuman(actor, true);
     const m = this.memberByName(name);
@@ -736,7 +1129,7 @@ const ACTIONS = {
     return { removed: m.name };
   },
 
-  update_settings(actor, { commands, leadAwayMinutes }) {
+  update_settings(actor, { commands, leadAwayMinutes, readUsage }) {
     if (actor.id !== HUMAN_ID) throw new RoomError('Only the human can change room settings.', 403);
     if (commands !== undefined) {
       if (!['off', 'ask', 'auto'].includes(commands)) throw new RoomError('commands must be off, ask or auto.');
@@ -744,6 +1137,7 @@ const ACTIONS = {
       this._system(`Commands for members: ${{ off: 'not allowed', ask: 'allowed after the human approves each one', auto: 'allowed without approval' }[commands]}.`);
     }
     if (leadAwayMinutes !== undefined) this.s.settings.leadAwayMinutes = Math.min(Math.max(Number(leadAwayMinutes) || 10, 1), 240);
+    if (readUsage !== undefined) this.s.settings.readUsage = !!readUsage;
     this._changed('settings');
     return { settings: this.s.settings };
   },
@@ -798,7 +1192,7 @@ const ACTIONS = {
     this._backup(abs, rel, actor);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, content);
-    this._system(`${this._nameOf(actor.id)} ${existed ? 'updated' : 'created'} ${rel}.`);
+    this._system(`${this._nameOf(actor.id)} ${existed ? 'updated' : 'created'} ${rel}.`, null, { quiet: true });
     return { written: rel, bytes: Buffer.byteLength(content), note: existed ? 'Previous version saved; restore_file can undo.' : undefined };
   },
 
@@ -813,7 +1207,7 @@ const ACTIONS = {
     if (count > 1 && !replace_all) throw new RoomError(`old_text appears ${count} times in ${rel}. Include more surrounding lines, or set replace_all.`);
     this._backup(abs, rel, actor);
     fs.writeFileSync(abs, replace_all ? text.split(old_text).join(new_text ?? '') : text.replace(old_text, () => new_text ?? ''));
-    this._system(`${this._nameOf(actor.id)} edited ${rel}.`);
+    this._system(`${this._nameOf(actor.id)} edited ${rel}.`, null, { quiet: true });
     return { edited: rel, replacements: replace_all ? count : 1 };
   },
 
@@ -831,7 +1225,7 @@ const ACTIONS = {
     this._backup(abs, rel, actor);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.copyFileSync(path.join(this.historyDir, v.version), abs);
-    this._system(`${this._nameOf(actor.id)} restored ${rel} to the version from ${v.saved}.`);
+    this._system(`${this._nameOf(actor.id)} restored ${rel} to the version from ${v.saved}.`, null, { quiet: true });
     return { restored: rel, from: v.saved };
   },
 
@@ -912,7 +1306,7 @@ const ACTIONS = {
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.copyFileSync(a.file, abs);
     this.s.assets[asset_id].projectPath = rel;
-    this._system(`${this._nameOf(actor.id)} saved ${a.name} into the project as ${rel}.`);
+    this._system(`${this._nameOf(actor.id)} saved ${a.name} into the project as ${rel}.`, null, { quiet: true });
     return { saved: rel };
   },
 
@@ -974,22 +1368,45 @@ export const RULES = [
   'Keep messages short and concrete: what you did, what you found, what you need.',
 ];
 
-function guidance(room, actor, lead, msgs, tasks) {
-  if (room.s.paused) return 'The room is PAUSED. Finish your current step, then call wait again.';
+function guidance(room, actor, lead, msgs, tasks, queued = 0) {
+  const more = queued ? ` ${queued} more message(s) are queued: call wait again right away to get them.` : '';
+  if (actor.paused) return `You are PAUSED by ${room._nameOf(actor.paused.by)}${actor.paused.reason ? ` (${actor.paused.reason})` : ''}. Do not change anything. Call wait again and wait to be resumed.${more}`;
+  if (room.s.paused) return `The room is PAUSED. Finish your current step, then call wait again.${more}`;
   const isLead = actor.id === room.s.leadId;
   if (!isLead && lead.status === 'away') {
-    return tasks.mine.length
+    return (tasks.mine.length
       ? `The lead (${lead.name}) is away. Finish your ${tasks.mine.length} task(s), report with finish_task, then keep calling wait until the lead returns.`
-      : `The lead (${lead.name}) is away and you have no tasks. Do not start new work; call wait again and stay ready.`;
+      : `The lead (${lead.name}) is away and you have no tasks. Do not start new work; call wait again and stay ready.`) + more;
   }
-  const mentioned = msgs.some((m) => m.to === actor.id || (m.to === null && new RegExp(`@${escapeRe(actor.name)}\\b`, 'i').test(m.text)));
-  if (mentioned) return 'Someone is talking to you directly. Answer or act on it, then call wait again.';
-  if (tasks.mine.length) return `You have ${tasks.mine.length} active task(s). Work on them, then finish_task each one.`;
-  if (!msgs.length) {
-    if (isLead) return 'Nothing new. Plan the next step and hand out work with ask, or call wait again.';
-    return tasks.open.length ? 'Nothing new for you. You can take an open task (take_task), or call wait again.' : 'Nothing new. Call wait again.';
+  let g;
+  const mentioned = msgs.some((m) => m.to === actor.id || (m.to === null && mentions(m.text, actor.name)));
+  if (mentioned) g = 'Someone is talking to you directly. Answer or act on it, then call wait again.';
+  else if (tasks.mine.length) g = `You have ${tasks.mine.length} active task(s). Work on them, then finish_task each one.`;
+  else if (!msgs.length) {
+    if (isLead) g = 'Nothing new. Plan the next step and hand out work with ask, or call wait again.';
+    else g = tasks.open.length ? 'Nothing new for you. You can take an open task (take_task), or call wait again.' : 'Nothing new. Call wait again.';
+  } else g = isLead ? 'Read the new messages, decide next steps, assign work. Then call wait again.' : 'Read the new messages and respond only if it helps. Then call wait again.';
+  const myUse = room._usageOf(actor);
+  const myLimit = Math.max(myUse?.session?.used || 0, myUse?.weekly?.used || 0);
+  if (myLimit >= 85) {
+    g += isLead
+      ? ` You are at ${Math.round(myLimit)}% of a usage limit: update the summary (set_summary) and hand the lead to a teammate with more headroom (lead_action) before you run out.`
+      : ` You are at ${Math.round(myLimit)}% of a usage limit: finish what you have and tell the lead.`;
+  } else if (isLead) {
+    const tight = Object.values(room.s.members).filter((m) => m.id !== actor.id && Math.max(room._usageOf(m)?.session?.used || 0, room._usageOf(m)?.weekly?.used || 0) >= 85);
+    if (tight.length) g += ` ${tight.map((m) => m.name).join(', ')} ${tight.length > 1 ? 'are' : 'is'} near a usage limit: give new work to others (ask_member with to "auto" does this).`;
   }
-  return isLead ? 'Read the new messages, decide next steps, assign work. Then call wait again.' : 'Read the new messages and respond only if it helps. Then call wait again.';
+  if (isLead) {
+    const orphans = Object.values(room.s.tasks).filter((t) => {
+      const owner = room.s.members[t.owner || t.to];
+      return owner && owner.id !== actor.id && !['done', 'cancelled', 'blocked', 'open'].includes(t.status) && ['away', 'offline'].includes(room.memberStatus(owner));
+    });
+    if (orphans.length) g += ` ${orphans.map((t) => `${t.id} (${room._nameOf(t.owner || t.to)})`).join(', ')} ${orphans.length > 1 ? 'are' : 'is'} stuck with someone away or disconnected: reassign (ask_member with to "auto").`;
+  }
+  if (isLead && room.s.seq - (room.s.summary?.seq || 0) > SUMMARY_NUDGE) {
+    g += ' The chat is getting long: when you have a moment, write a short summary (goal, decisions, who does what, what is left) with set_summary, so everyone catches up cheaply.';
+  }
+  return g + more;
 }
 
 function toList(v) {
@@ -1000,4 +1417,70 @@ function toList(v) {
 
 function escapeRe(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function mentions(text, name) {
+  return new RegExp(`@${escapeRe(name)}\\b`, 'i').test(String(text));
+}
+
+/**
+ * Reject over-long text instead of silently cutting it, and strip control characters
+ * (usually shell escaping gone wrong, e.g. PowerShell turning `a into a bell character).
+ */
+function cleanText(value, max, what) {
+  let text = String(value ?? '');
+  if (text.length > max) throw new RoomError(`${what} is ${text.length.toLocaleString('en')} characters; the limit is ${max.toLocaleString('en')}. Split it, or share it as a file (share_file with text).`, 413);
+  const stripped = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+  const warning = stripped.length !== text.length
+    ? `Removed ${text.length - stripped.length} control character(s) from your text. This usually means shell quoting went wrong (e.g. PowerShell double quotes turn backticks into escapes). Use single quotes, or crewroom ... --stdin / --file.`
+    : undefined;
+  return { text: stripped, warning };
+}
+
+/** Tiny keyword search: rarer words count more, recent entries break ties. Empty query = most recent. */
+function rankMemory(entries, query) {
+  const words = (s) => String(s).toLowerCase().match(/[\p{L}\p{N}_#.-]{2,}/gu) || [];
+  const q = [...new Set(words(query || ''))];
+  if (!q.length) return entries.slice().reverse();
+  const df = new Map();
+  const docs = entries.map((e) => {
+    const w = new Set([...words(e.text), ...(e.tags || []).map((t) => t.toLowerCase())]);
+    for (const x of w) df.set(x, (df.get(x) || 0) + 1);
+    return { e, w };
+  });
+  const n = entries.length || 1;
+  return docs
+    .map(({ e, w }) => ({ e, score: q.reduce((sum, x) => sum + (w.has(x) || [...w].some((y) => y.startsWith(x)) ? Math.log(1 + n / (df.get(x) || 1)) : 0), 0) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score || b.e.ts - a.e.ts)
+    .map((r) => r.e);
+}
+
+function compact(obj) {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+}
+
+const fmtPct = (v) => (typeof v === 'number' ? `${Math.round(v)}%` : undefined);
+
+/** Which local log source (usage.js) belongs to this member's app. */
+function appKind(m) {
+  const text = `${m.app || ''} ${m.client?.name || ''}`.toLowerCase();
+  if (/codex/.test(text)) return 'codex';
+  if (/claude/.test(text) && !/claude\.ai|web|browser/.test(text)) return 'claude-code';
+  return null;
+}
+
+/** Short "what is it doing" label for the dashboard. */
+function describeAction(action, a) {
+  const f = a.path ? ` ${a.path}` : '';
+  return {
+    status: 'checking the room', send: 'writing a message', ask: 'handing out a task', take_task: `starting ${a.task_id || 'a task'}`,
+    finish_task: `reporting ${a.task_id || 'a task'}`, claim_file: `editing${f}`, release_file: `done with${f}`, read_file: `reading${f}`,
+    write_file: `writing${f}`, edit_file: `editing${f}`, list_files: 'looking at files', search_files: `searching "${String(a.query || '').slice(0, 30)}"`,
+    project_changes: 'reviewing changes', share_file: 'sharing a file', save_asset: `saving${f}`, run_command: `running ${String(a.command || '').slice(0, 40)}`,
+    command_result: 'waiting for a command', note: 'taking notes', notes: 'reading notes', read_messages: 'reading history', read_message: 'reading a message',
+    set_summary: 'writing the summary', set_brief: 'writing the brief', set_activity: null, report_usage: null, join: 'joining',
+    remember: 'saving to memory', recall: 'searching memory', forget: 'cleaning memory', control_member: 'managing the team', wait_task: 'waiting for a teammate',
+    update_me: null, set_focus: null,
+  }[action] ?? null;
 }

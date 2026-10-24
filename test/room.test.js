@@ -187,3 +187,219 @@ test('state survives a restart (same code, members, transient fields not saved)'
   assert.equal(again.memberByName('A')._waiting, undefined);
   again.close();
 });
+
+test('focus mode: members get what concerns them, chatter becomes a count; the lead gets everything', async () => {
+  const { room, members: [lead, b, c] } = await setup('Claude', 'Gemini', 'Codex');
+  await room.call('send', c, { text: 'general chatter from Codex' });
+  await room.call('send', c, { text: 'hey @Gemini, check the colors' });
+  await room.call('send', c, { text: 'direct to Gemini', to: 'Gemini' });
+  await room.call('send', lead, { text: 'lead says hi' });
+  await room.call('send', HUMAN, { text: 'human says hi' });
+  await room.call('claim_file', c, { path: 'index.js' }); // quiet update
+  const r = await room.call('wait', b, { timeout_seconds: 0 });
+  assert.deepEqual(r.new_messages.map((m) => m.text), ['hey @Gemini, check the colors', 'direct to Gemini', 'lead says hi', 'human says hi']);
+  assert.deepEqual(r.other_messages, { count: 1, between: ['Codex'] });
+  assert.ok(b.traffic.saved > 0, 'skipped chatter counts as saved');
+  const l = await room.call('wait', lead, { timeout_seconds: 0 });
+  assert.ok(l.new_messages.some((m) => m.text === 'general chatter from Codex'));
+  assert.ok(l.new_messages.some((m) => /is editing index.js/.test(m.text)));
+  await room.call('set_focus', b, { mode: 'all' });
+  await room.call('send', c, { text: 'more chatter' });
+  assert.equal((await room.call('wait', b, { timeout_seconds: 0 })).new_messages.at(-1).text, 'more chatter');
+  room.close();
+});
+
+test('a focus member is not woken by chatter, only by something that concerns it', async () => {
+  const { room, members: [lead, b, c] } = await setup('Claude', 'Gemini', 'Codex');
+  const started = Date.now();
+  const pending = room.call('wait', b, { timeout_seconds: 3 });
+  setTimeout(() => room.call('send', c, { text: 'chatter' }), 50);
+  setTimeout(() => room.call('send', lead, { text: 'work for everyone' }), 400);
+  const r = await pending;
+  assert.ok(Date.now() - started >= 350, 'did not wake on chatter');
+  assert.equal(r.new_messages.at(-1).text, 'work for everyone');
+  room.close();
+});
+
+test('wait delivers at most 25 messages at a time and trims long ones', async () => {
+  const { room, members: [, b] } = await setup('Claude', 'Gemini');
+  for (let i = 0; i < 30; i++) await room.call('send', HUMAN, { text: `m${i}` });
+  const first = await room.call('wait', b, { timeout_seconds: 0 });
+  assert.equal(first.new_messages.length, 25);
+  assert.equal(first.queued, 5);
+  assert.match(first.guidance, /5 more message\(s\) are queued/);
+  const second = await room.call('wait', b, { timeout_seconds: 0 });
+  assert.deepEqual(second.new_messages.map((m) => m.text), ['m25', 'm26', 'm27', 'm28', 'm29']);
+
+  const long = 'x'.repeat(3000);
+  const { seq } = await room.call('send', HUMAN, { text: long });
+  const w = await room.call('wait', b, { timeout_seconds: 0 });
+  assert.match(w.new_messages[0].text, /read_message \d+ for the rest/);
+  assert.equal((await room.call('read_message', b, { seq })).message.text, long);
+  room.close();
+});
+
+test('oversized text is rejected (not silently cut) and control characters are stripped with a warning', async () => {
+  const { room, members: [a] } = await setup('A');
+  await assert.rejects(room.call('send', a, { text: 'y'.repeat(20_001) }), /20,001 characters; the limit is 20,000/);
+  const r = await room.call('send', a, { text: 'use \u0007ddon_type and\ttabs and C:\\path "quotes" ünïcødé' });
+  assert.match(r.warning, /Removed 1 control character/);
+  const stored = room.s.messages.at(-1).text;
+  assert.equal(stored, 'use ddon_type and\ttabs and C:\\path "quotes" ünïcødé');
+  room.close();
+});
+
+test('summary: newcomers start from it, and the lead is nudged when the chat gets long', async () => {
+  const { room, members: [lead] } = await setup('Claude');
+  for (let i = 0; i < 85; i++) await room.call('send', HUMAN, { text: `m${i}` });
+  assert.match((await room.call('wait', lead, { timeout_seconds: 0 })).guidance, /write a short summary/);
+  await room.call('set_summary', lead, { text: 'Goal: todo app. Done: layout. Left: tests.' });
+  const joined = await room.call('join', null, { name: 'Late' });
+  assert.match(joined.summary, /Goal: todo app/);
+  assert.equal(room.memberByName('Late').cursor, room.s.seq - 10);
+  assert.doesNotMatch((await room.call('wait', lead, { timeout_seconds: 0 })).guidance, /write a short summary/);
+  room.close();
+});
+
+test('presence: listening, working, idle with last contact, then not connected; unread counts', async () => {
+  const { room, members: [lead, b] } = await setup('Claude', 'Gemini');
+  const status = () => room.snapshot().members.find((m) => m.name === 'Gemini');
+  const pending = room.call('wait', b, { timeout_seconds: 2 });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(status().status, 'listening');
+  await room.call('send', lead, { text: 'go' });
+  await pending;
+  assert.equal(status().status, 'working');
+  b.lastSeen = Date.now() - 6 * 60_000; // thinking for a while without touching the room
+  assert.equal(status().status, 'idle');
+  b.lastSeen = Date.now() - 31 * 60_000;
+  assert.equal(status().status, 'offline');
+  await room.call('send', lead, { text: 'are you there?' });
+  assert.equal(status().unread, 1);
+  room.close();
+});
+
+test('usage from local logs is matched to members by app; models from logs win over self-reports', async () => {
+  const { room, members: [claude, codex] } = await setup('Claude', 'Codex');
+  claude.app = 'Claude Code';
+  codex.app = 'Codex app';
+  codex.model = 'self-reported-model';
+  room.applyUsage([
+    { source: 'codex', sessionId: 'c1', model: 'gpt-x-codex', contextPct: 40, limits: { session: { used: 91, minutes: 300 }, weekly: { used: 50, minutes: 10080 } }, updatedAt: Date.now() },
+    { source: 'claude-code', sessionId: 'k1', model: 'claude-model', contextPct: 12, updatedAt: Date.now() },
+  ]);
+  const snap = room.snapshot().members;
+  const cx = snap.find((m) => m.name === 'Codex');
+  assert.equal(cx.model, 'gpt-x-codex');
+  assert.equal(cx.source, 'logs');
+  assert.equal(cx.usage.session.used, 91);
+  assert.equal(snap.find((m) => m.name === 'Claude').usage.contextPct, 12);
+  const st = await room.call('status', claude);
+  assert.equal(st.members.find((m) => m.name === 'Codex').usage.session_limit, '91%');
+  room.close();
+});
+
+test('ask to "auto:<skill>" picks an able, free teammate with usage headroom; several names fan out', async () => {
+  const room = new Room({ projectRoot: tmpProject() });
+  const join = async (name, capabilities, lead) => room.memberByToken((await room.call('join', null, { name, capabilities, lead })).your_token);
+  const lead = await join('Claude', ['terminal'], true);
+  const gpt = await join('ChatGPT', ['image-generation', 'web-search']);
+  const gem = await join('Gemini', ['image-generation']);
+  await join('Codex', ['terminal']);
+  gpt._usage = { source: 'codex', limits: { session: { used: 95 } } }; // nearly out
+  const r = await room.call('ask', lead, { to: 'auto:image', title: 'Make an icon', kind: 'asset' });
+  assert.equal(r.task.assigned_to, 'Gemini');
+  await assert.rejects(room.call('ask', lead, { to: 'auto:video-editing', title: 'x' }), /Nobody available can do "video-editing"/);
+  const multi = await room.call('ask', lead, { to: 'Gemini, Codex', title: 'Review app.js', kind: 'review' });
+  assert.deepEqual(multi.tasks.map((t) => t.assigned_to), ['Gemini', 'Codex']);
+  assert.ok(gem);
+  room.close();
+});
+
+test('ask with wait_seconds returns the result in the same call', async () => {
+  const { room, members: [lead, b] } = await setup('Claude', 'Gemini');
+  const pending = room.call('ask', lead, { to: 'Gemini', title: 'Quick question', kind: 'question', wait_seconds: 5 });
+  await new Promise((r) => setTimeout(r, 50));
+  const id = Object.keys(room.s.tasks).at(-1);
+  await room.call('finish_task', b, { task_id: id, result: 'Use Inter, 16px.' });
+  const r = await pending;
+  assert.equal(r.task.status, 'done');
+  assert.equal(r.task.result, 'Use Inter, 16px.');
+  assert.match(r.note, /Finished/);
+  room.close();
+});
+
+test('update_me sets avatar, model, focus and activity in one call; bad avatar styles are explained', async () => {
+  const { room, members: [, b] } = await setup('Claude', 'Gemini');
+  assert.deepEqual(b.avatar, { style: 'bottts', seed: 'Gemini' }, 'everyone gets a default avatar');
+  const r = await room.call('update_me', b, { avatar: 'lorelei:sunny', model: 'gemini-2.5-pro', focus: 'all', activity: 'drawing' });
+  assert.equal(r.avatar, 'lorelei:sunny');
+  const snap = room.snapshot().members.find((m) => m.name === 'Gemini');
+  assert.match(snap.avatar, /\/avatar\/gemini\.svg\?v=lorelei%3Asunny/);
+  assert.equal(snap.model, 'gemini-2.5-pro');
+  assert.equal(snap.listen, 'all');
+  assert.equal(snap.activity, 'drawing');
+  await assert.rejects(room.call('update_me', b, { avatar: 'unicorn' }), /Unknown avatar style "unicorn"\. Choose one of: bottts/);
+  room.close();
+});
+
+test('@everyone reaches focus members; a lead near its limit is told to hand over', async () => {
+  const { room, members: [lead, b, c] } = await setup('Claude', 'Gemini', 'Codex');
+  await room.call('send', c, { text: '@everyone standup in 5' });
+  assert.equal((await room.call('wait', b, { timeout_seconds: 0 })).new_messages.at(-1).text, '@everyone standup in 5');
+  lead._usage = { source: 'claude-code', limits: { session: { used: 92 } } };
+  await room.call('send', HUMAN, { text: 'status?' });
+  assert.match((await room.call('wait', lead, { timeout_seconds: 0 })).guidance, /92% of a usage limit: update the summary .* hand the lead/);
+  c._usage = { source: 'codex', limits: { weekly: { used: 90 } } };
+  lead._usage = null;
+  await room.call('send', HUMAN, { text: 'next?' });
+  assert.match((await room.call('wait', lead, { timeout_seconds: 0 })).guidance, /Codex is near a usage limit/);
+  room.close();
+});
+
+test('the lead can pause, stop and resume one member; a paused member cannot change anything', async () => {
+  const { room, members: [lead, b, c] } = await setup('Claude', 'Gemini', 'Codex');
+  await room.call('ask', lead, { to: 'Codex', title: 'Write tests', files: ['index.js'] });
+  await room.call('claim_file', c, { path: 'index.js' });
+  await assert.rejects(room.call('control_member', b, { name: 'Codex', action: 'pause' }), /Only the lead or the human/);
+
+  await room.call('control_member', lead, { name: 'Gemini', action: 'pause', reason: 'wrong direction' });
+  await assert.rejects(room.call('write_file', b, { path: 'a.txt', content: 'x' }), /You are paused by Claude \(wrong direction\)/);
+  await room.call('send', b, { text: 'ok, pausing' }); // can still talk
+  const w = await room.call('wait', b, { timeout_seconds: 0 });
+  assert.ok(w.new_messages.some((m) => /PAUSED you: wrong direction/.test(m.text)));
+  assert.match(w.guidance, /You are PAUSED by Claude/);
+  assert.equal(room.snapshot().members.find((m) => m.name === 'Gemini').paused.by, 'Claude');
+  await room.call('control_member', HUMAN, { name: 'Gemini', action: 'resume' });
+  await room.call('write_file', b, { path: 'a.txt', content: 'x' });
+
+  const stop = await room.call('control_member', lead, { name: 'Codex', action: 'stop', reason: 'tests are wrong' });
+  assert.deepEqual(stop.reopened_tasks, ['T1']);
+  assert.equal(room.s.tasks.T1.status, 'open');
+  assert.equal(room.s.claims['index.js'], undefined);
+  await assert.rejects(room.call('take_task', c, { task_id: 'T1' }), /You are paused/);
+  room.close();
+});
+
+test('memory: remember facts, recall only the best matches, private entries stay private', async () => {
+  const { room, members: [lead, b] } = await setup('Claude', 'Gemini');
+  await room.call('remember', lead, { text: 'Tests use node:test, run with npm test', tags: ['testing'] });
+  await room.call('remember', lead, { text: 'Brand color is #3b6fd8', kind: 'decision' });
+  await room.call('remember', b, { text: 'The deploy key lives in 1Password vault Crew', tags: ['deploy'] });
+  await room.call('remember', b, { text: 'I prefer Inter for UI text', kind: 'preference', private: true });
+  for (let i = 0; i < 20; i++) await room.call('remember', lead, { text: `filler fact number ${i} about nothing` });
+
+  const r = await room.call('recall', b, { query: 'how do I run the tests' });
+  assert.equal(r.memories[0].text, 'Tests use node:test, run with npm test');
+  assert.ok(r.memories.length <= 5);
+  assert.equal((await room.call('recall', b, { query: 'brand color' })).memories[0].kind, 'decision');
+  assert.equal((await room.call('recall', lead, { query: 'Inter font' })).memories.length, 0, 'private memory hidden from others');
+  assert.equal((await room.call('recall', b, { query: 'Inter' })).memories[0].private, true);
+  assert.equal((await room.call('recall', b, { tags: 'deploy' })).memories.length, 1);
+  const id = (await room.call('recall', b, { query: 'deploy key' })).memories[0].id;
+  await assert.rejects(room.call('forget', HUMAN, { id: 'M999' }), /No memory/);
+  await room.call('forget', b, { id });
+  assert.equal((await room.call('recall', b, { query: 'deploy key' })).memories.length, 0);
+  assert.match((await room.call('join', null, { name: 'Late' })).memory, /shared memories: use recall/);
+  room.close();
+});

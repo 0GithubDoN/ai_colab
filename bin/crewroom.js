@@ -6,8 +6,9 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { homeDir, readJson, writeJson, normalizeCode, openInBrowser, VERSION, CLI_PATH } from '../src/util.js';
 import { ensureHub, runningHub, hubApi, findProjectRoot } from '../src/client.js';
+import { formatWait, formatMessage as fmtMsg, formatTask } from '../src/format.js';
 
-const BOOLEAN_FLAGS = new Set(['lead', 'all', 'json', 'decision', 'away', 'back', 'public', 'open', 'yes', 'y', 'list', 'off', 'new-code', 'help', 'h', 'remove']);
+const BOOLEAN_FLAGS = new Set(['lead', 'all', 'json', 'decision', 'away', 'back', 'public', 'open', 'yes', 'y', 'list', 'off', 'new-code', 'help', 'h', 'remove', 'stdin', 'private']);
 
 function parseArgs(argv) {
   const flags = {};
@@ -39,6 +40,7 @@ START A ROOM (in your project folder)
                                 link/code (for your AIs). Runs in the background.
   crewroom open                 open the dashboard in your browser
   crewroom links                show the links again
+  crewroom invite [--name Gemini] [--lead]   a ready-to-paste prompt that gets an AI into the room
   crewroom public [--off]       public link for cloud AIs (ChatGPT, Claude.ai web)
   crewroom stop [--all]         close this project's room (--all: stop Crewroom)
   crewroom start --new-code     new room code, everyone removed (if a link leaked)
@@ -47,9 +49,10 @@ START A ROOM (in your project folder)
 FOR AI AGENTS WITH A TERMINAL (run in the project folder)
   crewroom join --name Claude --app "Claude Code" --caps "terminal,local-files" [--lead]
   crewroom wait --as Claude [--timeout 90]
-  crewroom say --as Claude [--to Gemini] "message"
-  crewroom ask --as Claude [--to ChatGPT] [--kind task|review|fix|question|asset|research]
-               [--details "..."] [--files a.js,b.js] "title"
+  crewroom say --as Claude [--to Gemini] "message"      (or --stdin / --file msg.md for long or code-heavy text)
+  crewroom ask --as Claude [--to ChatGPT | --to "Gemini, Codex" | --to auto:image-generation]
+               [--kind task|review|fix|question|asset|research] [--details "..."] [--files a.js,b.js]
+               [--wait 120] "title"          (--wait: get the result back in the same call)
   crewroom take --as Gemini T2           crewroom done --as Gemini T2 "result" [--status blocked] [--attach id]
   crewroom claim --as Claude src/app.js  crewroom release --as Claude src/app.js
   crewroom share --as Gemini icon.png [--to Claude] ["message"]
@@ -57,12 +60,22 @@ FOR AI AGENTS WITH A TERMINAL (run in the project folder)
   crewroom status | tasks | history | assets | notes | changes  --as Claude
   crewroom note --as Claude [--decision] "text"
   crewroom away --as Claude ["reason"]   crewroom back --as Claude
+  crewroom summary --as Claude ["text"]  show or write the room summary (saves everyone tokens)
+  crewroom focus --as Claude focus|all   what you receive: only what concerns you, or everything
+  crewroom read --as Claude <#>          one message in full
+  crewroom remember --as Claude "fact" [--tags a,b] [--kind decision|preference|lesson] [--private]
+  crewroom recall --as Claude "a few words"     only the best matches (cheap)   |  crewroom forget --as Claude M12
+  crewroom me --as Claude [--avatar lorelei:sunny] [--model "..."] [--focus all|focus] ["activity"]
   crewroom brief | lead <Name> | pause | resume  --as Claude      (lead only)
+  crewroom pause | resume --as Claude --name Codex ["reason"]      (lead: pause or resume one AI)
+  crewroom halt --as Claude --name Codex ["reason"]                (lead: stop it, free its files, reopen its tasks)
   Options: --as <Name> (saved by join), --token, --url <invite link> to use another room.
 
 ADVANCED
   crewroom hub [--port 7777] [--host 127.0.0.1] [--public-url URL]   run the hub in the foreground
   crewroom mcp                  stdio MCP server (what apps launch; set up by "connect")
+  crewroom statusline           Claude Code status line: shows model/context/limits and sends them
+                                to the dashboard (set up by "crewroom connect claude-code")
 `;
 
 function die(msg) {
@@ -116,26 +129,6 @@ async function api(conn, action, body, token) {
 
 // ---------------- output ----------------
 
-function fmtMsg(m) {
-  const to = m.to === 'everyone' ? '' : ` -> ${m.to}`;
-  const att = m.attachments?.length ? `\n      files: ${m.attachments.map((a) => `${a.id} ${a.name} (${a.mime})${a.project_path ? ` at ${a.project_path}` : ''}`).join('; ')}` : '';
-  return `#${m.seq} ${m.time.slice(11, 19)} ${m.from}${to}${m.mentions_you ? ' [mentions you]' : ''}: ${m.text.replace(/\n/g, '\n      ')}${att}`;
-}
-
-function fmtTask(t) {
-  return `  ${t.id} [${t.kind}, ${t.status}] from ${t.from}${t.assigned_to !== 'anyone' ? ` to ${t.assigned_to}` : ''}: ${t.title}${t.details ? `\n      ${t.details.replace(/\n/g, '\n      ')}` : ''}${t.files ? `\n      files: ${t.files.join(', ')}` : ''}`;
-}
-
-function formatWait(r) {
-  const out = [`lead: ${r.lead?.name ? `${r.lead.name} (${r.lead.status})` : 'none'}${r.paused ? '  |  ROOM PAUSED' : ''}`];
-  if (r.history?.length) out.push('--- earlier ---', ...r.history.map(fmtMsg));
-  out.push(r.new_messages.length ? `--- ${r.new_messages.length} new message(s) ---` : '--- no new messages ---', ...r.new_messages.map(fmtMsg));
-  if (r.your_tasks.length) out.push('--- your tasks ---', ...r.your_tasks.map(fmtTask));
-  if (r.open_tasks_anyone_can_take.length) out.push('--- open tasks anyone can take ---', ...r.open_tasks_anyone_can_take.map(fmtTask));
-  out.push(`guidance: ${r.guidance}`);
-  return out.join('\n');
-}
-
 function printLinks(l, { header = true } = {}) {
   if (header) console.log(`\nCrewroom is ready: "${l.name}"   (${l.project})\n`);
   console.log(`  Dashboard (only for you):   ${l.dashboard}`);
@@ -153,7 +146,8 @@ function printLinks(l, { header = true } = {}) {
 function nextSteps(l) {
   console.log(`
 Next:
-  • Paste the invite link (or just the code ${l.code}) into any AI app and say "join this room".
+  • Get a ready-to-paste prompt for each AI:  crewroom invite --name Gemini   (add --lead for the lead)
+    or click "Invite AI" on the dashboard. Short version: paste the code ${l.code} and say "join this room".
   • AI apps not set up yet? Run once:  crewroom connect
   • ChatGPT or Claude.ai on the web?  Run:  crewroom public   (or use the button on the dashboard)
 Crewroom keeps running in the background. "crewroom stop" closes this room.`);
@@ -280,6 +274,30 @@ ChatGPT and Claude.ai (web) run in the cloud and cannot start programs on your P
 For them run "crewroom public" and add the MCP URL it prints as a connector.`);
 }
 
+/**
+ * Claude Code status line: Claude Code pipes its session JSON (model, context, 5-hour and
+ * weekly limits) to this command on every update. We print a short line for Claude Code
+ * and forward the numbers to the local hub so the Crewroom dashboard can show them.
+ */
+async function cmdStatusline() {
+  let raw = '';
+  for await (const chunk of process.stdin) raw += chunk;
+  let j = {};
+  try { j = JSON.parse(raw); } catch {}
+  const p = (v) => (typeof v === 'number' ? `${Math.round(v)}%` : null);
+  const parts = [j.model?.display_name || j.model?.id || 'Claude'];
+  if (p(j.context_window?.used_percentage)) parts.push(`ctx ${p(j.context_window.used_percentage)}`);
+  if (p(j.rate_limits?.five_hour?.used_percentage)) parts.push(`5h ${p(j.rate_limits.five_hour.used_percentage)}`);
+  if (p(j.rate_limits?.seven_day?.used_percentage)) parts.push(`week ${p(j.rate_limits.seven_day.used_percentage)}`);
+  console.log(parts.join(' · '));
+  // Never start the hub or slow Claude Code down from here: only report if it is already running.
+  const info = readJson(path.join(homeDir(), 'hub.json'));
+  if (!info?.port || !j.session_id) return;
+  try {
+    await fetch(`http://127.0.0.1:${info.port}/hub/usage`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-key': info.key }, body: raw, signal: AbortSignal.timeout(800) });
+  } catch {}
+}
+
 async function cmdDoctor() {
   const ok = (b, msg) => console.log(`${b ? '✓' : '✗'} ${msg}`);
   const major = Number(process.versions.node.split('.')[0]);
@@ -315,6 +333,16 @@ async function main() {
   switch (cmd) {
     case 'start': return cmdStart(flags);
     case 'links': return cmdLinks(flags);
+    case 'invite': {
+      const root = findProjectRoot();
+      if (!root) die('No room in this folder. Run "crewroom start" first.');
+      const hub = await ensureHub();
+      const links = await hubApi(hub, 'rooms', { projectRoot: root });
+      const params = new URLSearchParams({ key: new URL(links.dashboard).searchParams.get('key'), role: flags.lead ? 'lead' : 'member' });
+      if (flags.name || pos[0]) params.set('name', flags.name || pos[0]);
+      const res = await fetch(`${links.dashboard.replace(/\/dashboard\?.*$/, '')}/prompt?${params}`);
+      return console.log(await res.text());
+    }
     case 'open': return cmdLinks(flags, { open: true });
     case 'public': return cmdPublic(flags);
     case 'stop': return cmdStop(flags);
@@ -323,6 +351,7 @@ async function main() {
       const { runBridge } = await import('../src/bridge.js');
       return runBridge();
     }
+    case 'statusline': return cmdStatusline();
     case 'connect':
     case 'setup': return cmdConnect(pos, flags);
     case 'disconnect': return cmdConnect(pos, flags, { remove: true });
@@ -338,7 +367,7 @@ async function main() {
     if (!name) die('Usage: crewroom join --name <YourName> --app "<your app>" [--caps a,b] [--lead]');
     const file = identityFile(conn.code, name);
     const old = readJson(file)?.token;
-    const r = await api(conn, 'join', { name, app: flags.app, model: flags.model, capabilities: flags.caps, lead: !!flags.lead }, old);
+    const r = await api(conn, 'join', { name, app: flags.app, model: flags.model, capabilities: flags.caps, avatar: flags.avatar, lead: !!flags.lead }, old);
     const joinedAs = r.welcome.match(/"([^"]+)"/)?.[1] || name;
     writeJson(identityFile(conn.code, joinedAs), { name: joinedAs, token: r.your_token }, { mode: 0o600 });
     console.log(`${r.welcome} Role: ${r.role}. Lead: ${r.lead.name || 'nobody yet'}.`);
@@ -352,8 +381,22 @@ async function main() {
   }
 
   const token = tokenFor(flags, conn);
-  const call = (action, body) => api(conn, action, body, token);
+  const call = async (action, body) => {
+    const r = await api(conn, action, body, token);
+    if (r?.warning) console.error(`crewroom warning: ${r.warning}`);
+    return r;
+  };
   const out = (r) => console.log(flags.json ? JSON.stringify(r, null, 2) : typeof r === 'string' ? r : JSON.stringify(r, null, 2));
+  // Long or code-heavy text: --stdin or --file avoids shell quoting problems (e.g. PowerShell backticks).
+  const longText = async (fallback) => {
+    if (flags.stdin) {
+      let raw = '';
+      for await (const chunk of process.stdin) raw += chunk;
+      return raw.replace(/\r?\n$/, '');
+    }
+    if (flags.file) return fs.readFileSync(path.resolve(String(flags.file)), 'utf8');
+    return fallback;
+  };
 
   switch (cmd) {
     case 'wait': {
@@ -367,20 +410,24 @@ async function main() {
       return flags.json ? out(r) : console.log(formatWait(r));
     }
     case 'say':
-    case 'send':
-      if (!text) die('Nothing to say.');
-      return out(await call('send', { text, to: flags.to, attachments: flags.attach }));
-    case 'ask':
-      if (!text) die('Usage: crewroom ask --to <member> "what you need"');
-      return out(await call('ask', { title: text, to: flags.to, kind: flags.kind, details: flags.details, files: flags.files }));
+    case 'send': {
+      const body = await longText(text);
+      if (!body) die('Nothing to say. Give the text, or use --stdin / --file <path>.');
+      return out(await call('send', { text: body, to: flags.to, attachments: flags.attach }));
+    }
+    case 'ask': {
+      if (!text) die('Usage: crewroom ask --to <member> "title" [--details "..." | --stdin | --file <path>]');
+      const details = flags.stdin || flags.file ? await longText() : flags.details;
+      return out(await call('ask', { title: text, to: flags.to, kind: flags.kind, details, files: flags.files, wait_seconds: flags.wait ? Number(flags.wait) : undefined }));
+    }
     case 'take':
       return out(await call('take_task', { task_id: pos[0] }));
     case 'done':
     case 'finish':
-      return out(await call('finish_task', { task_id: pos[0], result: pos.slice(1).join(' '), status: flags.status || 'done', attachments: flags.attach }));
+      return out(await call('finish_task', { task_id: pos[0], result: await longText(pos.slice(1).join(' ')), status: flags.status || 'done', attachments: flags.attach }));
     case 'tasks': {
       const r = await call('list_tasks', { include_done: !!flags.all });
-      return flags.json ? out(r) : console.log(r.tasks.length ? r.tasks.map((t) => `${fmtTask(t)}${t.result ? `\n      result: ${t.result.replace(/\n/g, '\n      ')}` : ''}`).join('\n') : 'No tasks.');
+      return flags.json ? out(r) : console.log(r.tasks.length ? r.tasks.map((t) => formatTask(t)).join('\n') : 'No tasks.');
     }
     case 'status':
       return out(await call('status', {}));
@@ -389,13 +436,26 @@ async function main() {
     case 'release':
       return out(await call('release_file', { path: pos[0] }));
     case 'note':
-      return out(await call('note', { text, kind: flags.decision ? 'decision' : 'note' }));
+      return out(await call('note', { text: await longText(text), kind: flags.decision ? 'decision' : 'note' }));
     case 'notes':
       return out(await call('notes', {}));
     case 'changes': {
       const r = await call('project_changes', { path: pos[0] });
       return flags.json || !r.git ? out(r) : console.log(`${r.status}\n\n${r.summary}\n\n${r.diff}`);
     }
+    case 'read':
+      return console.log(fmtMsg((await call('read_message', { seq: Number(pos[0]) })).message));
+    case 'summary': {
+      const summaryText = await longText(text);
+      if (!summaryText) {
+        const st = await call('status', {});
+        return console.log(st.summary || 'No summary yet. Write one: crewroom summary --as <you> "goal, decisions, who does what, what is left"');
+      }
+      return out(await call('set_summary', { text: summaryText }));
+    }
+    case 'focus':
+      if (!['all', 'focus'].includes(pos[0])) die('Usage: crewroom focus --as <you> focus|all [--name <member>]');
+      return out(await call('set_focus', { mode: pos[0], name: flags.name }));
     case 'history': {
       const r = await call('read_messages', { limit: Number(flags.limit || 50) });
       return flags.json ? out(r) : console.log(r.messages.map(fmtMsg).join('\n'));
@@ -426,9 +486,24 @@ async function main() {
     case 'lead':
       return out(await call('set_lead', { name: pos[0] }));
     case 'pause':
+      if (flags.name) return out(await call('control_member', { name: flags.name, action: 'pause', reason: text || undefined }));
       return out(await call('pause', { paused: true, reason: text || undefined }));
     case 'resume':
+      if (flags.name) return out(await call('control_member', { name: flags.name, action: 'resume', reason: text || undefined }));
       return out(await call('pause', { paused: false }));
+    case 'halt':
+      if (!flags.name) die('Usage: crewroom halt --as <lead> --name <member> ["reason"]   (pauses it, frees its files, reopens its tasks)');
+      return out(await call('control_member', { name: flags.name, action: 'stop', reason: text || undefined }));
+    case 'remember':
+      return out(await call('remember', { text: await longText(text), tags: flags.tags, kind: flags.kind, private: !!flags.private }));
+    case 'recall': {
+      const r = await call('recall', { query: text, tags: flags.tags, limit: flags.limit ? Number(flags.limit) : undefined });
+      return flags.json ? out(r) : console.log(r.memories.length ? r.memories.map((m) => `${m.id} ${m.kind ? `[${m.kind}] ` : ''}${m.text}${m.tags ? `  #${m.tags.join(' #')}` : ''}  (${m.by}${m.private ? ', private' : ''})`).join('\n') : `Nothing found (${r.total} memories).`);
+    }
+    case 'forget':
+      return out(await call('forget', { id: pos[0] }));
+    case 'me':
+      return out(await call('update_me', { avatar: flags.avatar, model: flags.model, focus: flags.focus, activity: pos.length ? text : undefined }));
     default:
       die(`Unknown command "${cmd}". Run: crewroom help`);
   }
