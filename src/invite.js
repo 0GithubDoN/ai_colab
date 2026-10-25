@@ -113,7 +113,8 @@ ${RULES.map((r) => `- ${r}`).join('\n')}
 }
 
 /** A short, ready-to-paste prompt that gets any AI into the room in one go. */
-export function invitePrompt(room, { links, name, role = 'member' }) {
+export function invitePrompt(room, { links, name, role = 'member', member }) {
+  if (member) return resumePrompt(room, { links, member });
   const who = name ? String(name).slice(0, 32) : '<a short name for you, e.g. Gemini>';
   const lead = role === 'lead';
   const lines = [
@@ -137,4 +138,25 @@ export function invitePrompt(room, { links, name, role = 'member' }) {
       : 'Do the tasks you get, review each other, hand work to teammates who are better at it, and keep messages short.',
   );
   return lines.join('\n');
+}
+
+/**
+ * For a member that moves to a fresh conversation (the old one got long and every tool call
+ * rereads it). Its token brings back its identity, tasks, checkpoint and the room summary.
+ */
+function resumePrompt(room, { links, member }) {
+  return [
+    `Continue your work in my Crewroom in this fresh conversation. Your previous conversation got long, and every tool call rereads all of it, so we start clean to save tokens.`,
+    '',
+    `You are: ${member.name}${member.id === room.s.leadId ? ' (the LEAD)' : ''}`,
+    `Room code: ${room.code}`,
+    `Project folder on my computer: ${room.projectRoot}`,
+    '',
+    'Rejoin with your token (keeps your name, tasks and checkpoint):',
+    `1. You have Crewroom tools: call join_room with token "${member.token}".`,
+    `2. You can run terminal commands: run  crewroom join --name "${member.name}"  in the project folder (your identity is saved there), or read ${links.invite}.`,
+    '',
+    'You get back the room summary, your last checkpoint, your open tasks and the last few messages for you. Continue from there: no need to say hello or reread the whole chat. Then work in the usual loop (wait for updates -> do your part -> report -> wait).',
+    'Before you move to another fresh conversation later, save a checkpoint first (update_me with checkpoint: what you are doing and what is next).',
+  ].join('\n');
 }

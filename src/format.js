@@ -16,13 +16,17 @@ export function formatTask(t, { full = true } = {}) {
 }
 
 export function formatWait(r) {
+  // Nothing happened: one short line (this is the common case, and it is read in a loop).
+  if (r.quiet) return `nothing new${r.paused ? ' (room paused)' : ''}${r.other_task_ids?.length ? `; your open tasks: ${r.other_task_ids.join(', ')}` : ''}. next: ${r.guidance.replace(/^Nothing new\.\s*/, '')}`;
   const out = [`lead: ${r.lead?.name ? `${r.lead.name} (${r.lead.status})` : 'none'}${r.paused ? '  |  ROOM PAUSED' : ''}`];
   if (r.history?.length) out.push('--- earlier ---', ...r.history.map(formatMessage));
   out.push(r.new_messages.length ? `--- ${r.new_messages.length} new ---` : '--- nothing new ---', ...r.new_messages.map(formatMessage));
   if (r.other_messages) out.push(`(+${r.other_messages.count} other message(s) from ${r.other_messages.between.join(', ')} not addressed to you; read_messages if you need them)`);
   if (r.queued) out.push(`(${r.queued} more queued: call wait again now)`);
-  if (r.your_tasks?.length) out.push('--- your tasks ---', ...r.your_tasks.map((t) => formatTask(t, { full: !!t.changed })));
-  if (r.open_tasks_anyone_can_take?.length) out.push('--- open tasks anyone can take ---', ...r.open_tasks_anyone_can_take.map((t) => formatTask(t, { full: false })));
+  if (r.your_tasks?.length) out.push('--- your new/changed tasks ---', ...r.your_tasks.map((t) => formatTask(t, { full: !t.brief })));
+  if (r.other_task_ids?.length) out.push(`(your other open tasks: ${r.other_task_ids.join(', ')})`);
+  if (r.open_tasks_anyone_can_take?.length) out.push('--- new open tasks anyone can take ---', ...r.open_tasks_anyone_can_take.map((t) => formatTask(t, { full: false })));
+  else if (r.open_task_count) out.push(`(${r.open_task_count} open task(s) anyone can take: room_status lists them)`);
   out.push(`next: ${r.guidance}`);
   return out.join('\n');
 }

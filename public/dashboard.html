@@ -31,6 +31,7 @@
   button.ghost { border-color: transparent; background: transparent; }
   button.ghost:hover { background: var(--panel-2); }
   button.danger { color: var(--bad); }
+  button.nudge { border-color: var(--warn); color: var(--warn); font-weight: 600; }
   button.small { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
   .muted { color: var(--muted); } .faint { color: var(--faint); }
   .spacer { flex: 1; }
@@ -55,7 +56,9 @@
   main { flex: 1; display: grid; grid-template-columns: 300px minmax(0, 1fr) 340px; min-height: 0; }
   aside, .chatpane { min-height: 0; }
   aside { background: var(--panel); overflow: auto; }
-  aside.left { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  aside.left { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-x: hidden; }
+  /* minmax(0, 1fr): long names, models or activities wrap or get cut, never widen the panel */
+  #members { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   aside.right { border-left: 1px solid var(--line); display: flex; flex-direction: column; }
   h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 4px 0 2px; display: flex; align-items: center; gap: 6px; font-weight: 650; }
   h3 button { margin-left: auto; text-transform: none; letter-spacing: 0; }
@@ -68,10 +71,10 @@
   .avatar.img { border: 1px solid var(--line); }
   .working-strip .stack { display: inline-flex; flex: none; }
   .working-strip .avatar.sm + .avatar.sm { margin-left: -9px; box-shadow: 0 0 0 2px var(--bg); }
-  .member { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; background: var(--panel); }
+  .member { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; background: var(--panel); min-width: 0; overflow-wrap: anywhere; }
   .member.working { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
   .member .top { display: flex; align-items: center; gap: 9px; }
-  .member .name { font-weight: 650; display: flex; align-items: center; gap: 6px; }
+  .member .name { font-weight: 650; display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; }
   .member .state { font-size: 12px; color: var(--muted); }
   .member .state.working { color: var(--accent); }
   .unread { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--warn) 20%, var(--panel)); color: var(--warn); font-weight: 650; white-space: nowrap; }
@@ -117,6 +120,8 @@
   .msg.cont .head { display: none; }
   .msg .who { font-weight: 650; font-size: 13px; cursor: pointer; }
   .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; padding: 7px 11px; border-radius: 4px 12px 12px 12px; background: var(--panel); border: 1px solid var(--line); display: inline-block; max-width: 100%; }
+  /* each AI gets its own tint (--ai is its colour), same soft look as the rest */
+  .msg.ai .body { background: color-mix(in srgb, var(--ai) 8%, var(--panel)); border-color: color-mix(in srgb, var(--ai) 30%, var(--line)); }
   .msg.human .body { background: var(--mine); border-color: color-mix(in srgb, var(--accent) 25%, var(--line)); }
   .msg.dm .body { border-style: dashed; }
   .msg.task .body { border-left: 3px solid var(--warn); }
@@ -223,7 +228,7 @@
 <main>
   <aside class="left">
     <h3>Team <span class="faint" id="teamCount"></span></h3>
-    <div id="members" style="display:grid;gap:8px"></div>
+    <div id="members"></div>
     <div class="stats" id="stats"></div>
   </aside>
 
@@ -235,6 +240,8 @@
       <button class="chip" data-filter="updates">Updates</button>
       <span class="spacer"></span>
       <span class="faint" id="msgCount" style="font-size:12px"></span>
+      <span class="faint" id="chapterInfo" style="font-size:12px"></span>
+      <button class="small" id="chapterBtn" title="Archive this chat and continue from a summary. AIs are asked to save a checkpoint and move to a fresh conversation, which cuts their token use.">📖 New chapter</button>
     </div>
     <div id="feed"><button class="small" id="older">Load older messages</button></div>
     <div class="working-strip" id="working"></div>
@@ -323,11 +330,20 @@
   <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Create</button></div>
 </form></dialog>
 
+<dialog id="freshDlg">
+  <h2>Continue <span id="freshName"></span> in a fresh chat</h2>
+  <div class="muted" style="font-size:13px">A long conversation costs more and more: the AI's app rereads all of it on every step. Open a <b>new chat</b> in <span id="freshApp"></span>, paste this prompt, and it carries on with its tasks, its checkpoint and the room summary. Nothing is lost.</div>
+  <div class="row" style="margin-top:10px;gap:8px"><button class="small" id="freshAsk">1. Ask it to save a checkpoint</button><span class="faint" id="freshCk" style="font-size:12px"></span></div>
+  <textarea id="freshPrompt" readonly style="margin-top:10px;min-height:200px;font:12.5px/1.45 ui-monospace,monospace"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" id="freshCopy">2. Copy prompt for the new chat</button></div>
+  <div class="buttons"><button onclick="this.closest('dialog').close()">Close</button></div>
+</dialog>
+
 <dialog id="textDlg"><form method="dialog">
   <h2 id="textDlgTitle"></h2>
   <div class="muted" id="textDlgHint" style="font-size:12.5px"></div>
   <textarea id="textDlgBody" style="min-height:180px;margin-top:10px"></textarea>
-  <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save</button></div>
+  <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok" id="textDlgOk">Save</button></div>
 </form></dialog>
 
 <dialog id="settingsDlg"><form method="dialog">
@@ -355,7 +371,20 @@ let openMembers = new Set();
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const palette = ['#d9822b', '#3b6fd8', '#1f9d55', '#9b51e0', '#d03b30', '#0e9aa7', '#b8860b', '#d6336c'];
-const colorOf = (name) => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return palette[h % palette.length]; };
+const hashColor = (name) => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h % palette.length; };
+// Members keep their hashed colour unless an earlier member already has it: then the next free one.
+let colorMap = new Map();
+const assignColors = (members) => {
+  const used = new Set();
+  colorMap = new Map();
+  for (const m of members) {
+    let i = hashColor(m.name);
+    for (let k = 0; k < palette.length && used.has(i); k++) i = (i + 1) % palette.length;
+    used.add(i);
+    colorMap.set(m.name, palette[i]);
+  }
+};
+const colorOf = (name) => colorMap.get(name) || palette[hashColor(name)];
 const ago = (ts) => { if (!ts) return 'never'; const s = Math.max(0, Math.round((Date.now() - ts) / 1000)); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
 const until = (ts) => { if (!ts) return ''; const m = Math.round((ts - Date.now()) / 60000); if (m <= 0) return 'resets now'; return m < 60 ? `resets in ${m}m` : m < 2880 ? `resets in ${Math.floor(m / 60)}h ${m % 60}m` : `resets ${new Date(ts).toLocaleDateString(undefined, { weekday: 'short' })}`; };
 const ktok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n || 0));
@@ -387,6 +416,7 @@ function connect() {
     if (data.reset) { messages = []; }
     const fresh = data.messages || [];
     state = data;
+    assignColors(data.members || []);
     if (data.reset) { messages = fresh; renderFeed(true); }
     else if (fresh.length) { messages.push(...fresh); appendMessages(fresh); }
     if (messages.length > 3000) messages.splice(0, messages.length - 3000);
@@ -408,7 +438,7 @@ function renderFeed(scrollToEnd) {
     const node = messageNode(m);
     if (node) feed.appendChild(node);
   }
-  $('older').style.display = messages.length && messages[0].seq > 1 ? 'block' : 'none';
+  $('older').style.display = messages.length && messages[0].seq > (state?.firstSeq || 1) ? 'block' : 'none';
   if (scrollToEnd) feed.scrollTop = feed.scrollHeight;
 }
 
@@ -451,7 +481,8 @@ function messageNode(m) {
   const key = `${m.fromId}|${m.toId}`;
   const cont = lastAuthor && lastAuthor.key === key && Date.parse(m.time) - lastAuthor.t < 3 * 60_000 && m.kind === 'chat' && lastAuthor.kind === 'chat';
   lastAuthor = { key, t: Date.parse(m.time), kind: m.kind };
-  wrap.className = ['msg', m.kind, m.fromId === 'human' ? 'human' : '', m.toId ? 'dm' : '', cont ? 'cont' : ''].join(' ');
+  wrap.className = ['msg', m.kind, m.fromId === 'human' ? 'human' : 'ai', m.toId ? 'dm' : '', cont ? 'cont' : ''].join(' ');
+  if (m.fromId !== 'human') wrap.style.setProperty('--ai', colorOf(m.from));
   // Long messages start folded so the chat stays readable; one click shows everything.
   const long = m.text.length > 700 || m.text.split('\n').length > 12;
   const att = (m.attachments || []).map((a) => a.mime.startsWith('image/') ? `<a href="${a.url}" target="_blank" rel="noopener"><img src="${a.url}" alt="${esc(a.name)}"></a>` : `<a href="${a.url}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join('');
@@ -500,10 +531,11 @@ function memberCard(m) {
     <div class="more">
       <div>${u ? `Usage from ${esc(u.source)}${u.tokensIn ? ` · ${ktok(u.tokensIn)} in / ${ktok(u.tokensOut)} out` : ''}${u.costUsd ? ` · $${u.costUsd.toFixed(2)}` : ''}${u.note ? ` · ${esc(u.note)}` : ''}` : 'This app does not share token usage (cloud apps can only self-report).'}</div>
       <div style="margin-top:4px">Room traffic ≈ ${ktok(m.traffic.tokensIn + m.traffic.tokensOut)} tokens${m.traffic.tokensSaved ? ` · saved ≈ ${ktok(m.traffic.tokensSaved)} by focus mode` : ''}</div>
+      <div style="margin-top:4px" title="Every check makes its app reread its whole conversation. Many empty checks = wasted tokens.">Checked the room ${m.stats?.checks || 0}×${m.stats?.checks ? ` (${m.stats.empty || 0} with nothing new)` : ''} · ${m.hasCheckpoint ? 'checkpoint saved ✓' : 'no checkpoint'}</div>
       <div style="margin-top:4px">${esc(m.via || '')}${m.client ? ` · client ${esc(m.client.name)}${m.client.version ? ` ${esc(m.client.version)}` : ''}` : ''} · seen ${ago(m.lastSeen)}</div>
       ${m.capabilities?.length ? `<div class="caps">${m.capabilities.map((c) => `<span class="cap">${esc(c)}</span>`).join('')}</div>` : ''}
       <div class="row"><span>Receives</span><span class="seg"><button class="${m.listen === 'focus' ? 'on' : ''}" data-focus="focus" data-name="${esc(m.name)}" title="Only what concerns it (saves tokens)">focus</button><button class="${m.listen === 'all' ? 'on' : ''}" data-focus="all" data-name="${esc(m.name)}" title="Every message">all</button></span></div>
-      <div class="row"><button class="small" data-mention="${esc(m.name)}">@ Mention</button><button class="small" data-dm="${esc(m.name)}">Direct message</button>${m.role !== 'lead' ? `<button class="small" data-lead="${esc(m.name)}">Make lead</button>` : ''}</div>
+      <div class="row"><button class="small" data-mention="${esc(m.name)}">@ Mention</button><button class="small" data-dm="${esc(m.name)}">Direct message</button><button class="small" data-fresh="${esc(m.name)}" title="Move it to a new conversation without losing context (saves tokens)">↻ Fresh chat</button>${m.role !== 'lead' ? `<button class="small" data-lead="${esc(m.name)}">Make lead</button>` : ''}</div>
       <div class="row">${m.paused ? `<button class="small primary" data-control="resume" data-name="${esc(m.name)}">▶ Resume</button>` : `<button class="small" data-control="pause" data-name="${esc(m.name)}">⏸ Pause</button><button class="small danger" data-control="stop" data-name="${esc(m.name)}" title="Pause it, free its files and reopen its tasks">■ Stop</button>`}<button class="small danger" data-kick="${esc(m.name)}">Remove</button></div>
     </div>
   </div>`;
@@ -549,7 +581,11 @@ function render() {
   $('members').innerHTML = members.length ? members.map(memberCard).join('') : '<div class="empty">No AI yet. Click <b>Invite AI</b> to bring one in.</div>';
   const st = s.stats;
   $('stats').innerHTML = `<div><span class="muted">Messages</span><b>${st.messages}</b></div><div><span class="muted">Room tokens to AIs</span><b>≈ ${ktok(st.tokensSent)}</b></div><div><span class="muted">Saved by focus mode</span><b>≈ ${ktok(st.tokensSaved)}</b></div>`;
-  $('msgCount').textContent = `${st.messages} messages`;
+  const chapter = s.chapter || 1;
+  $('msgCount').textContent = chapter > 1 ? `${st.inChapter} in this chapter` : `${st.messages} messages`;
+  $('chapterInfo').innerHTML = chapter > 1 ? `· chapter ${chapter} · earlier: ${Array.from({ length: chapter - 1 }, (_, i) => `<a href="${base}/archive/${i + 1}?key=${encodeURIComponent(KEY)}" target="_blank" rel="noopener">${i + 1}</a>`).join(' ')}` : '';
+  // Past ~200 messages a fresh chapter usually pays off; make the button stand out.
+  $('chapterBtn').classList.toggle('nudge', st.inChapter > 200);
 
   // working strip
   const working = members.filter((m) => m.status === 'working');
@@ -694,14 +730,37 @@ $('publicBtn').onclick = async () => {
   if (on && !confirm('Create a public link so cloud AIs (ChatGPT, Claude.ai web) can reach your rooms?\n\nAnyone who has the full link can join, so share it only with your AI apps. The first time, this downloads cloudflared (~20 MB).')) return;
   await post(`${base}/tunnel`, { on });
 };
-function editText(title, hint, value, save) {
-  $('textDlgTitle').textContent = title; $('textDlgHint').textContent = hint; $('textDlgBody').value = value || '';
+function editText(title, hint, value, save, okLabel = 'Save') {
+  $('textDlgTitle').textContent = title; $('textDlgHint').textContent = hint; $('textDlgBody').value = value || ''; $('textDlgOk').textContent = okLabel;
   const dlg = $('textDlg');
   dlg.onclose = () => { if (dlg.returnValue === 'ok') save($('textDlgBody').value); };
   dlg.showModal();
 }
 $('briefBtn').onclick = () => editText('Project brief', 'Every AI sees this when it joins: the goal, the stack, who does what.', state.brief, (v) => act('set_brief', { brief: v }));
 $('summaryBtn').onclick = () => editText('Room summary', 'What has happened so far: decisions, progress, what is left. Newcomers read this instead of the whole chat.', state.summary?.text, (v) => v.trim() && act('set_summary', { text: v }));
+$('chapterBtn').onclick = () => editText('Start a new chapter',
+  'The chat so far is archived (you can still read it) and everyone continues from this summary, so check it covers the goal, decisions, who does what and what is left. Each AI is asked to save a checkpoint and continue in a fresh conversation if its app allows: that is what cuts token use.',
+  state.summary?.text, (v) => v.trim() && act('new_chapter', { summary: v }), 'Start new chapter');
+let freshFor = null;
+async function openFresh(name) {
+  const m = memberByName(name);
+  freshFor = name;
+  $('freshName').textContent = name; $('freshApp').textContent = m?.app || 'its app';
+  $('freshCk').textContent = m?.hasCheckpoint ? 'it has a saved checkpoint ✓' : 'no checkpoint saved yet';
+  $('freshAsk').textContent = '1. Ask it to save a checkpoint';
+  $('freshPrompt').value = await fetch(`${base}/prompt?${new URLSearchParams({ key: KEY, name, resume: '1' })}`).then((r) => r.text());
+  $('freshDlg').showModal();
+}
+$('freshAsk').onclick = async () => {
+  await act('send', { to: freshFor, text: `@${freshFor} please save a checkpoint now (update_me with checkpoint: what you are doing, what is next, anything you would need to remember). I am moving you to a fresh chat to save tokens.` });
+  $('freshAsk').textContent = 'Asked ✓ (wait for it to answer)';
+};
+$('freshCopy').onclick = async () => {
+  $('freshPrompt').select();
+  try { await navigator.clipboard.writeText($('freshPrompt').value); } catch { document.execCommand('copy'); }
+  $('freshCopy').textContent = 'Copied ✓';
+  setTimeout(() => ($('freshCopy').textContent = '2. Copy prompt for the new chat'), 1500);
+};
 $('settingsBtn').onclick = () => { $('setCommands').value = state.settings.commands; $('setAway').value = state.settings.leadAwayMinutes; $('setUsage').checked = state.settings.readUsage !== false; $('settingsDlg').showModal(); };
 $('settingsDlg').addEventListener('close', () => { if ($('settingsDlg').returnValue === 'ok') act('update_settings', { commands: $('setCommands').value, leadAwayMinutes: Number($('setAway').value), readUsage: $('setUsage').checked }); });
 $('newTaskBtn').onclick = () => { $('taskForm').reset(); $('taskDlg').showModal(); };
@@ -742,6 +801,7 @@ document.addEventListener('click', (e) => {
   if (b.dataset.forget && confirm('Forget this memory?')) act('forget', { id: b.dataset.forget });
   if (b.dataset.mention) insertMention(b.dataset.mention);
   if (b.dataset.dm) { $('to').value = b.dataset.dm; $('text').focus(); }
+  if (b.dataset.fresh) openFresh(b.dataset.fresh);
   if (b.dataset.release) act('release_file', { path: b.dataset.release });
   if (b.dataset.approve) act('approve_command', { command_id: b.dataset.approve, approve: true });
   if (b.dataset.deny) act('approve_command', { command_id: b.dataset.deny, approve: false });

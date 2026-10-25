@@ -36,7 +36,7 @@ test('start runs the hub in the background and prints links; agents talk through
   await cli(['ask', '--as', 'Claude', '--to', 'Codex', '--kind', 'review', 'Review README.md']);
   const w = await cli(['wait', '--as', 'Codex', '--timeout', '3']);
   assert.match(w.stdout, /\[T1 · review for Codex\] Review README.md/);
-  assert.match(w.stdout, /--- your tasks ---/);
+  assert.match(w.stdout, /--- your new\/changed tasks ---\n  T1 \[review, assigned, NEW\/CHANGED\] from Claude: Review README.md\nnext:/);
   await cli(['done', '--as', 'Codex', 'T1', 'Looks good']);
   const w2 = await cli(['wait', '--as', 'Claude', '--timeout', '3']);
   assert.match(w2.stdout, /\[T1 done\] Review README.md\n\s+Looks good/);
@@ -70,6 +70,32 @@ test('stdio bridge: an app joins with the code, and survives a hub restart', asy
   await client.close();
 });
 
+test('stdio bridge: one long wait spans several hub calls, wakes on news, and lite drops file tools', { timeout: 60_000 }, async (t) => {
+  await cli(['start', '--json']);
+  const links = JSON.parse((await cli(['links', '--json'])).stdout);
+  const transport = new StdioClientTransport({ command: process.execPath, args: [CLI, 'mcp', '--lite', '--wait', '3'], env: { ...env, CREWROOM_WAIT_CHUNK: '1' }, stderr: 'pipe' });
+  const client = new Client({ name: 'codex-sim', version: '1.0.0' });
+  await client.connect(transport);
+  t.after(() => client.close()); // a failed assert must not leave the bridge running
+  const { tools } = await client.listTools();
+  assert.ok(!tools.some((t) => t.name === 'write_file'));
+  await client.callTool({ name: 'join_room', arguments: { invite: links.code, name: 'Waiter' } });
+  await client.callTool({ name: 'wait_for_updates', arguments: { timeout_seconds: 0 } });
+
+  // Nothing happens: the app gets one answer after ~3s (three 1s hub calls in between).
+  let t0 = Date.now();
+  let r = await client.callTool({ name: 'wait_for_updates', arguments: {} });
+  assert.ok(Date.now() - t0 >= 2500, `waited ${Date.now() - t0}ms`);
+  assert.match(r.content[0].text, /^nothing new/);
+
+  // News during the second chunk wakes it right away.
+  t0 = Date.now();
+  setTimeout(() => cli(['say', '--as', 'Claude', '@Waiter ping']), 1500);
+  r = await client.callTool({ name: 'wait_for_updates', arguments: { timeout_seconds: 20 } });
+  assert.ok(Date.now() - t0 < 10_000);
+  assert.match(r.content[0].text, /@Waiter ping/);
+});
+
 test('connect writes app configs (JSON + TOML), keeps other servers, and disconnect removes them', async () => {
   fs.mkdirSync(path.join(fakeUserHome, '.cursor'), { recursive: true });
   fs.writeFileSync(path.join(fakeUserHome, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { other: { command: 'x' } } }));
@@ -81,9 +107,10 @@ test('connect writes app configs (JSON + TOML), keeps other servers, and disconn
   assert.match(stdout, /✓ Codex/);
   const cursor = JSON.parse(fs.readFileSync(path.join(fakeUserHome, '.cursor', 'mcp.json'), 'utf8'));
   assert.equal(cursor.mcpServers.other.command, 'x');
-  assert.deepEqual(cursor.mcpServers.crewroom.args.slice(-1), ['mcp']);
+  assert.deepEqual(cursor.mcpServers.crewroom.args.slice(-2), ['mcp', '--lite']);
   const toml = fs.readFileSync(path.join(fakeUserHome, '.codex', 'config.toml'), 'utf8');
-  assert.match(toml, /\[mcp_servers\.crewroom\]\ncommand = ".*"\nargs = \[".*crewroom\.js", "mcp"\]/);
+  assert.match(toml, /\[mcp_servers\.crewroom\]\ncommand = ".*"\nargs = \[".*crewroom\.js", "mcp", "--lite", "--wait", "1500"\]/);
+  assert.match(toml, /tool_timeout_sec = 1800/);
   assert.match(toml, /\[mcp_servers\.other\]/);
   assert.ok(fs.existsSync(path.join(fakeUserHome, '.cursor', 'mcp.json.crewroom-backup')));
 

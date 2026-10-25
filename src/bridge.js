@@ -11,9 +11,16 @@ import { homeDir } from './util.js';
 
 const REINIT_ID = '__crewroom_reinit__';
 const REJOIN_ID = '__crewroom_rejoin__';
+const CHUNK_SECONDS = Number(process.env.CREWROOM_WAIT_CHUNK) || 270; // env: tests only
 const log = (...a) => process.stderr.write(`[crewroom] ${a.join(' ')}\n`);
 
-export async function runBridge({ home = homeDir() } = {}) {
+export async function runBridge({ home = homeDir(), lite = false, wait } = {}) {
+  const query = new URLSearchParams();
+  if (lite) query.set('profile', 'lite');
+  if (wait) query.set('wait', String(wait));
+  const qs = query.size ? `?${query}` : '';
+  const pending = new Map(); // internal request id -> resolve
+  const longWaits = new Map(); // app request id -> { current internal id, cancelled }
   const stdio = new StdioServerTransport();
   let http = null;
   let initRequest = null;
@@ -24,9 +31,14 @@ export async function runBridge({ home = homeDir() } = {}) {
 
   const connect = async () => {
     const info = await ensureHub({ home });
-    const t = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${info.port}/mcp`));
+    const t = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${info.port}/mcp${qs}`));
     t.onmessage = (m) => {
       if (m.id === REINIT_ID || m.id === REJOIN_ID) return;
+      if (pending.has(m.id)) {
+        pending.get(m.id)(m);
+        pending.delete(m.id);
+        return;
+      }
       if (joinIds.has(m.id)) {
         joinIds.delete(m.id);
         try {
@@ -52,7 +64,56 @@ export async function runBridge({ home = homeDir() } = {}) {
     return reconnecting;
   };
 
+  const send = async (msg) => {
+    try {
+      if (reconnecting) await reconnecting;
+      await http.send(msg);
+    } catch (err) {
+      await reconnect();
+      await http.send(msg);
+    }
+  };
+  const request = (msg) => new Promise((resolve, reject) => {
+    pending.set(msg.id, resolve);
+    send(msg).catch((err) => {
+      pending.delete(msg.id);
+      reject(err);
+    });
+  });
+
+  // One long wait for the app = several shorter calls to the hub (each HTTP request must end
+  // within ~5 minutes). Empty answers in between are swallowed: the app is only woken once.
+  const longWait = async (msg, seconds) => {
+    const deadline = Date.now() + Math.min(seconds, 3600) * 1000;
+    const state = { id: null, cancelled: false };
+    longWaits.set(msg.id, state);
+    try {
+      for (let n = 0; ; n++) {
+        const chunk = Math.max(1, Math.min(Math.ceil((deadline - Date.now()) / 1000), CHUNK_SECONDS));
+        state.id = `__crewroom_wait_${msg.id}_${n}`;
+        const reply = await request({ ...msg, id: state.id, params: { ...msg.params, arguments: { ...msg.params.arguments, timeout_seconds: chunk } } });
+        if (state.cancelled) return;
+        const text = reply.result?.content?.[0]?.text || '';
+        if (reply.error || reply.result?.isError || !text.startsWith('nothing new') || deadline - Date.now() < 500) {
+          await stdio.send({ ...reply, id: msg.id });
+          return;
+        }
+      }
+    } finally {
+      longWaits.delete(msg.id);
+    }
+  };
+
   const forward = async (msg) => {
+    if (msg.method === 'notifications/cancelled' && longWaits.has(msg.params?.requestId)) {
+      const state = longWaits.get(msg.params.requestId);
+      state.cancelled = true;
+      msg = { ...msg, params: { ...msg.params, requestId: state.id } };
+    }
+    if (msg.method === 'tools/call' && msg.params?.name === 'wait_for_updates') {
+      const seconds = Number(msg.params.arguments?.timeout_seconds ?? wait ?? 45);
+      if (seconds > CHUNK_SECONDS) return longWait(msg, seconds);
+    }
     if (isInitializeRequest(msg)) initRequest = msg;
     if (msg.method === 'tools/call' && msg.params?.name === 'join_room') joinIds.add(msg.id);
     if (msg.method === 'notifications/initialized') initialized = true;

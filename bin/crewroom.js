@@ -8,7 +8,7 @@ import { homeDir, readJson, writeJson, normalizeCode, openInBrowser, VERSION, CL
 import { ensureHub, runningHub, hubApi, findProjectRoot } from '../src/client.js';
 import { formatWait, formatMessage as fmtMsg, formatTask } from '../src/format.js';
 
-const BOOLEAN_FLAGS = new Set(['lead', 'all', 'json', 'decision', 'away', 'back', 'public', 'open', 'yes', 'y', 'list', 'off', 'new-code', 'help', 'h', 'remove', 'stdin', 'private']);
+const BOOLEAN_FLAGS = new Set(['lead', 'all', 'json', 'decision', 'away', 'back', 'public', 'open', 'yes', 'y', 'list', 'off', 'new-code', 'help', 'h', 'remove', 'stdin', 'private', 'lite', 'resume']);
 
 function parseArgs(argv) {
   const flags = {};
@@ -41,6 +41,7 @@ START A ROOM (in your project folder)
   crewroom open                 open the dashboard in your browser
   crewroom links                show the links again
   crewroom invite [--name Gemini] [--lead]   a ready-to-paste prompt that gets an AI into the room
+  crewroom invite --resume --name Gemini     a prompt to continue as Gemini in a fresh conversation (saves tokens)
   crewroom public [--off]       public link for cloud AIs (ChatGPT, Claude.ai web)
   crewroom stop [--all]         close this project's room (--all: stop Crewroom)
   crewroom start --new-code     new room code, everyone removed (if a link leaked)
@@ -66,6 +67,8 @@ FOR AI AGENTS WITH A TERMINAL (run in the project folder)
   crewroom remember --as Claude "fact" [--tags a,b] [--kind decision|preference|lesson] [--private]
   crewroom recall --as Claude "a few words"     only the best matches (cheap)   |  crewroom forget --as Claude M12
   crewroom me --as Claude [--avatar lorelei:sunny] [--model "..."] [--focus all|focus] ["activity"]
+  crewroom checkpoint --as Claude "doing X; next Y"   saved for when you rejoin in a fresh conversation
+  crewroom chapter --as Claude "where we are"         (lead) archive the chat and start a new chapter
   crewroom brief | lead <Name> | pause | resume  --as Claude      (lead only)
   crewroom pause | resume --as Claude --name Codex ["reason"]      (lead: pause or resume one AI)
   crewroom halt --as Claude --name Codex ["reason"]                (lead: stop it, free its files, reopen its tasks)
@@ -73,7 +76,9 @@ FOR AI AGENTS WITH A TERMINAL (run in the project folder)
 
 ADVANCED
   crewroom hub [--port 7777] [--host 127.0.0.1] [--public-url URL]   run the hub in the foreground
-  crewroom mcp                  stdio MCP server (what apps launch; set up by "connect")
+  crewroom mcp [--lite] [--wait 600]   stdio MCP server (what apps launch; set up by "connect").
+                                --lite: no file tools (for apps with their own); --wait: default
+                                wait in seconds (long waits are split for the hub; fewer checks)
   crewroom statusline           Claude Code status line: shows model/context/limits and sends them
                                 to the dashboard (set up by "crewroom connect claude-code")
 `;
@@ -340,6 +345,7 @@ async function main() {
       const links = await hubApi(hub, 'rooms', { projectRoot: root });
       const params = new URLSearchParams({ key: new URL(links.dashboard).searchParams.get('key'), role: flags.lead ? 'lead' : 'member' });
       if (flags.name || pos[0]) params.set('name', flags.name || pos[0]);
+      if (flags.resume) params.set('resume', '1');
       const res = await fetch(`${links.dashboard.replace(/\/dashboard\?.*$/, '')}/prompt?${params}`);
       return console.log(await res.text());
     }
@@ -349,7 +355,7 @@ async function main() {
     case 'hub': return cmdHub(flags);
     case 'mcp': {
       const { runBridge } = await import('../src/bridge.js');
-      return runBridge();
+      return runBridge({ lite: !!flags.lite, wait: flags.wait ? Number(flags.wait) : undefined });
     }
     case 'statusline': return cmdStatusline();
     case 'connect':
@@ -374,9 +380,14 @@ async function main() {
     console.log(`Project folder: ${r.project_folder}`);
     console.log(`Brief: ${r.brief}`);
     console.log(`Members: ${r.members.map((m) => `${m.name}${m.role === 'lead' ? ' [lead]' : ''} (${m.app}${m.capabilities?.length ? `; ${m.capabilities.join(', ')}` : ''})`).join(', ')}`);
+    if (r.summary) console.log(`Summary: ${r.summary}`);
+    if (r.your_checkpoint) console.log(`\nYour checkpoint: ${r.your_checkpoint}`);
+    if (r.your_tasks?.length) console.log(`Your open tasks: ${r.your_tasks.map((t) => `${t.id} [${t.kind}, ${t.status}] ${t.title}`).join('; ')}`);
+    if (r.recent_for_you?.length) console.log(`Recent for you:\n${r.recent_for_you.map((m) => `  #${m.seq} ${m.from}: ${String(m.text).split('\n')[0]}`).join('\n')}`);
     console.log(`\nRules:\n${r.rules.map((x) => `- ${x}`).join('\n')}`);
     console.log(`\nSaved your identity. Add --as ${joinedAs} to every command.`);
-    console.log(`Next: crewroom say --as ${joinedAs} "hi, I'm ${joinedAs}; I can ..."   then   crewroom wait --as ${joinedAs}`);
+    if (r.your_checkpoint || r.your_tasks?.length || r.recent_for_you?.length) console.log(`Next: continue from your checkpoint/tasks, then   crewroom wait --as ${joinedAs}`);
+    else console.log(`Next: crewroom say --as ${joinedAs} "hi, I'm ${joinedAs}; I can ..."   then   crewroom wait --as ${joinedAs}`);
     return;
   }
 
@@ -406,7 +417,7 @@ async function main() {
         const chunk = Math.min(remaining, 280);
         r = await call('wait', { timeout_seconds: chunk, include_history: Number(flags.history || 0) });
         remaining -= chunk;
-      } while (!r.new_messages.length && remaining > 0);
+      } while (!r.new_messages.length && !r.your_tasks?.length && remaining > 0);
       return flags.json ? out(r) : console.log(formatWait(r));
     }
     case 'say':
@@ -503,7 +514,11 @@ async function main() {
     case 'forget':
       return out(await call('forget', { id: pos[0] }));
     case 'me':
-      return out(await call('update_me', { avatar: flags.avatar, model: flags.model, focus: flags.focus, activity: pos.length ? text : undefined }));
+      return out(await call('update_me', { avatar: flags.avatar, model: flags.model, focus: flags.focus, checkpoint: flags.checkpoint !== undefined ? await longText(String(flags.checkpoint)) : undefined, activity: pos.length ? text : undefined }));
+    case 'checkpoint':
+      return out(await call('update_me', { checkpoint: await longText(text) }));
+    case 'chapter':
+      return out(await call('new_chapter', { summary: await longText(text) }));
     default:
       die(`Unknown command "${cmd}". Run: crewroom help`);
   }

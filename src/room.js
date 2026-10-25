@@ -33,6 +33,8 @@ const WORKING_MS = 5 * 60_000; // "working" if it acted in the room within this 
 const MAX_BATCH = 25; // messages per wait; the rest stay queued for the next call
 const MAX_MESSAGE_CHARS = 1500; // longer messages are trimmed in wait results (read_message gets all)
 const SUMMARY_NUDGE = 80; // ask the lead for a summary after this many messages
+const CHAPTER_NUDGE = 200; // suggest a new chapter after this many messages in the current one
+const REST_AFTER = 3; // empty short checks in a row before an AI is told to rest
 // What a paused member may not do through the room (it can still read, wait and talk).
 const PAUSE_BLOCKS = new Set(['write_file', 'edit_file', 'restore_file', 'claim_file', 'save_asset', 'share_file', 'run_command', 'take_task', 'finish_task', 'ask', 'set_brief', 'set_summary']);
 // onlineSeconds: how long after its last contact an AI still counts as connected. Long, because
@@ -451,6 +453,15 @@ export class Room extends EventEmitter {
 
   // ---------- snapshot (dashboard) ----------
 
+  /** An archived chapter as plain text (for the human; AIs should use the summary and recall). */
+  chapterText(n) {
+    const file = path.join(this.dataDir, 'archive', `chapter-${Number(n)}.json`);
+    if (!/^\d+$/.test(String(n)) || !fs.existsSync(file)) throw new RoomError('No such chapter.', 404);
+    const c = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const lines = c.messages.map((m) => `#${m.seq} ${new Date(m.ts).toISOString().slice(0, 16).replace('T', ' ')} ${this._nameOf(m.from)}${m.to ? ` -> ${this._nameOf(m.to)}` : ''}: ${m.text}`);
+    return `${this.s.name}: chapter ${c.chapter} (ended ${c.endedAt})\n\nSummary at the end:\n${c.summary}\n\n${lines.join('\n')}\n`;
+  }
+
   snapshot({ messageLimit = 400 } = {}) {
     const members = Object.values(this.s.members);
     const sum = (k) => members.reduce((n, m) => n + (m.traffic?.[k] || 0), 0);
@@ -463,7 +474,9 @@ export class Room extends EventEmitter {
       settings: this.s.settings,
       projectRoot: this.projectRoot,
       lead: this.leadStatus(),
-      stats: { messages: this.s.seq, tokensSent: Math.round((sum('out') + sum('in')) / 4), tokensSaved: Math.round(sum('saved') / 4) },
+      stats: { messages: this.s.seq, inChapter: this.s.messages.length, tokensSent: Math.round((sum('out') + sum('in')) / 4), tokensSaved: Math.round(sum('saved') / 4) },
+      chapter: this.s.chapter || 1,
+      firstSeq: this.s.messages[0]?.seq || this.s.seq + 1,
       members: members.map((m) => ({
         id: m.id, name: m.name, app: m.app, via: m.via, capabilities: m.capabilities, client: m.client,
         avatar: m.avatar ? `/r/${this.code}/avatar/${encodeURIComponent(m.id)}.svg?v=${encodeURIComponent(`${m.avatar.style}:${m.avatar.seed}`)}` : null,
@@ -471,6 +484,7 @@ export class Room extends EventEmitter {
         role: m.id === this.s.leadId ? 'lead' : 'member', status: this.memberStatus(m), activity: m.activity, lastAction: m.lastAction,
         lastSeen: m.lastSeen, joinedAt: m.joinedAt, listen: this.listenOf(m), usage: this._usageOf(m), unread: this._unread(m),
         paused: m.paused ? { by: this._nameOf(m.paused.by), reason: m.paused.reason, stopped: m.paused.stopped } : null,
+        stats: m.stats || { checks: 0, empty: 0 }, hasCheckpoint: !!m.checkpoint,
         traffic: { tokensIn: Math.round((m.traffic?.in || 0) / 4), tokensOut: Math.round((m.traffic?.out || 0) / 4), tokensSaved: Math.round((m.traffic?.saved || 0) / 4) },
       })),
       messages: messageLimit ? this.dashboardMessages({ limit: messageLimit }) : [],
@@ -532,8 +546,16 @@ export class Room extends EventEmitter {
     throw new RoomError('Only the lead or the human can do that.', 403);
   }
 
-  _welcome(member) {
+  _welcome(member, { resume = false } = {}) {
+    // Coming back (e.g. in a fresh conversation): only what it needs to continue, nothing more.
+    const pack = resume ? {
+      your_checkpoint: member.checkpoint?.text,
+      your_tasks: this._tasksFor(member).mine.map((t) => compact({ id: t.id, kind: t.kind, title: t.title, status: t.status, from: t.from })),
+      // Context it already read; anything unread still comes with the next wait.
+      recent_for_you: this.s.messages.filter((m) => m.seq <= (member.cursor || 0) && this._relevantFor(member, m) && this._concerns(member, m) && !(m.kind === 'system' && m.quiet)).slice(-5).map((m) => this._formatMessage(m, member, { maxChars: 300 })),
+    } : {};
     return {
+      ...pack,
       welcome: `You are "${member.name}" in room "${this.s.name}".`,
       your_token: member.token,
       role: member.id === this.s.leadId ? 'lead' : 'member',
@@ -548,7 +570,9 @@ export class Room extends EventEmitter {
         ? 'all: you receive every message'
         : 'focus: you receive direct messages, @mentions, your tasks, the lead and the human; other chatter is summarized as a count (saves tokens). Use set_focus to change.',
       rules: RULES,
-      next_step: 'Say hello with send_message (one line: who you are, your model, what you can do), then call wait_for_updates in a loop.',
+      next_step: resume
+        ? 'You are back. Continue from your checkpoint and tasks (no hello needed, no need to reread the chat), then call wait_for_updates in a loop.'
+        : 'Say hello with send_message (one line: who you are, your model, what you can do), then call wait_for_updates in a loop.',
     };
   }
 
@@ -656,7 +680,7 @@ const ACTIONS = {
         if (model) existing.model = String(model).slice(0, 60);
         if (clientInfo) existing.client = clientInfo;
         this._system(`${existing.name} reconnected.`, null, { quiet: true });
-        return this._welcome(existing);
+        return this._welcome(existing, { resume: true });
       }
     }
     name = String(name || '').trim().replace(/^@/, '').replace(/\s+/g, ' ').slice(0, 32);
@@ -701,11 +725,13 @@ const ACTIONS = {
       this._system(`${member.name} is the lead.`);
     }
     // Start a little back in history so the newcomer has context (less if there is a summary to read).
-    member.cursor = Math.max(0, this.s.seq - (this.s.summary ? 10 : 30));
+    const returning = member.joinedAt < now() - 1000 && (member.checkpoint || member.stats?.checks);
+    // A newcomer starts a little back in history for context; a returning member keeps its place.
+    if (!returning) member.cursor = Math.max(0, this.s.seq - (this.s.summary ? 10 : 30));
     member.phase = 'working';
     member.lastAction = 'joining';
     this._changed('member');
-    return this._welcome(member);
+    return this._welcome(member, { resume: !!returning });
   },
 
   status(actor) {
@@ -733,9 +759,12 @@ const ACTIONS = {
     };
   },
 
-  async wait(actor, { timeout_seconds = 60, include_history = 0 } = {}) {
+  async wait(actor, { timeout_seconds = 60, include_history = 0, signal } = {}) {
+    if (!(signal instanceof AbortSignal)) signal = undefined;
     if (actor.id === HUMAN_ID) throw new RoomError('The human does not need to wait.');
     const timeoutMs = Math.min(Math.max(Number(timeout_seconds) || 0, 0), MAX_WAIT_SECONDS) * 1000;
+    // A long wait is split into back-to-back calls (CLI, bridge): those count as one check.
+    const continued = timeoutMs > 0 && actor._lastWait?.empty && actor._lastWait.blocked && now() - actor._lastWait.end < 1500;
     // Everything this member could see since its cursor, split into what concerns it and the rest.
     const scan = () => {
       const deliver = [];
@@ -757,6 +786,7 @@ const ACTIONS = {
             clearTimeout(timer);
             this.off('change', onChange);
             this.off('closed', finish);
+            signal?.removeEventListener('abort', finish);
             resolve(scan());
           };
           // Only wake up for something that concerns this member, not for every message.
@@ -764,6 +794,7 @@ const ACTIONS = {
           const timer = setTimeout(finish, timeoutMs);
           this.on('change', onChange);
           this.once('closed', finish);
+          signal?.addEventListener('abort', finish);
         }));
       } finally {
         actor._waiting = Math.max(0, (actor._waiting || 1) - 1);
@@ -771,6 +802,8 @@ const ACTIONS = {
       }
     }
 
+    // The app gave up on this call (its tool timeout): keep everything unread for the next one.
+    if (signal?.aborted) throw new RoomError('Wait cancelled by the app.', 499);
     // Deliver at most MAX_BATCH messages; the rest stay queued for the next wait.
     const batch = deliver.slice(0, MAX_BATCH);
     const queued = deliver.length - batch.length;
@@ -781,27 +814,47 @@ const ACTIONS = {
       actor.phase = 'working';
       actor.lastAction = 'reading new messages';
     }
+    // How often each AI checks, and how often for nothing: polling is what costs tokens.
+    actor.stats ||= { checks: 0, empty: 0 };
+    if (!continued) actor.stats.checks++;
+    if (batch.length) actor._empty = 0;
+    else if (!continued) {
+      actor.stats.empty++;
+      actor._empty = (actor._empty || 0) + 1;
+    }
+    actor._lastWait = { end: now(), empty: !batch.length, blocked: timeoutMs > 0 };
     this.emit('change', 'member');
 
     const history = include_history > 0
       ? this.s.messages.filter((m) => m.seq < (batch[0]?.seq ?? Infinity) && (m.to === null || m.to === actor.id || m.from === actor.id)).slice(-Math.min(include_history, 50)).map((m) => this._formatMessage(m, actor, { maxChars: 400 }))
       : undefined;
     const tasks = this._tasksFor(actor);
-    const seenAt = actor.tasksSeenAt || 0;
-    actor.tasksSeenAt = now();
+    // What this member already saw of each task (by version, not by clock: two things can
+    // happen in the same millisecond).
+    const seen = actor.tasksSeen || {};
+    const version = (t) => `${t.updated}|${t.status}|${t.owner || ''}`;
+    actor.tasksSeen = Object.fromEntries([...tasks.mine, ...tasks.open].map((t) => [t.id, version(t)]));
     const lead = this.leadStatus();
     const chatter = skippedNow.filter((m) => m.kind !== 'system');
+    const changedTasks = tasks.mine.filter((t) => seen[t.id] !== version(t));
+    const newOpen = tasks.open.filter((t) => !(t.id in seen));
     const result = {
+      // Nothing at all happened: the caller prints one short line instead of a report.
+      quiet: !batch.length && !chatter.length && !changedTasks.length && !newOpen.length && !queued && !history?.length ? true : undefined,
       new_messages: batch.map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })),
       queued: queued || undefined,
       other_messages: chatter.length ? { count: chatter.length, between: [...new Set(chatter.map((m) => this._nameOf(m.from)))] } : undefined,
       history,
       // Full details only for tasks that are new or changed since the last wait.
-      your_tasks: tasks.mine.map((t) => (Date.parse(t.updated) > seenAt ? { ...t, changed: true } : { id: t.id, kind: t.kind, title: t.title, status: t.status, from: t.from })),
-      open_tasks_anyone_can_take: tasks.open.map((t) => ({ id: t.id, kind: t.kind, title: t.title, from: t.from })),
+      // A task whose message is in this batch is shown as one line (its details are in the message).
+      your_tasks: changedTasks.map((t) => (batch.some((m) => m.taskId === t.id && m.kind === 'task') ? { id: t.id, kind: t.kind, title: t.title, status: t.status, from: t.from, changed: true, brief: true } : { ...t, changed: true })),
+      // Tasks seen before are only listed by id: no need to resend them every time.
+      other_task_ids: tasks.mine.filter((t) => !changedTasks.includes(t)).map((t) => t.id),
+      open_tasks_anyone_can_take: newOpen.map((t) => ({ id: t.id, kind: t.kind, title: t.title, from: t.from })),
+      open_task_count: tasks.open.length,
       lead,
       paused: this.s.paused,
-      guidance: guidance(this, actor, lead, batch, tasks, queued),
+      guidance: guidance(this, actor, lead, batch, tasks, queued, { timeoutMs }),
     };
     this.account(actor, 0, 0, skippedNow.reduce((n, m) => n + m.text.length + 60, 0));
     return result;
@@ -863,7 +916,7 @@ const ACTIONS = {
     return compact({ sent: true, seq: msg.seq, to: target ? this._nameOf(target) : 'everyone', warning: clean.warning });
   },
 
-  update_me(actor, { activity, status, focus, model, avatar, context_used_percent, session_limit_used_percent, weekly_limit_used_percent, usage_note }) {
+  update_me(actor, { activity, status, focus, model, avatar, checkpoint, context_used_percent, session_limit_used_percent, weekly_limit_used_percent, usage_note }) {
     if (actor.id === HUMAN_ID) throw new RoomError('Only agents have a profile.');
     const out = {};
     if (avatar !== undefined) {
@@ -875,6 +928,11 @@ const ACTIONS = {
       out.avatar = `${actor.avatar.style}:${actor.avatar.seed}`;
     }
     if (model) actor.model = String(model).slice(0, 60);
+    if (checkpoint !== undefined) {
+      // Private notes to self, returned when it rejoins (e.g. in a fresh conversation).
+      actor.checkpoint = checkpoint ? { text: cleanText(checkpoint, 3000, 'Checkpoint').text, ts: now() } : undefined;
+      out.checkpoint = checkpoint ? 'saved: you get it back when you rejoin with your token' : 'cleared';
+    }
     if (focus) Object.assign(out, ACTIONS.set_focus.call(this, actor, { mode: focus }));
     if ([context_used_percent, session_limit_used_percent, weekly_limit_used_percent, usage_note].some((v) => v !== undefined)) {
       ACTIONS.report_usage.call(this, actor, { context_used_percent, session_limit_used_percent, weekly_limit_used_percent, note: usage_note });
@@ -1045,6 +1103,41 @@ const ACTIONS = {
    * through the room), stop it (pause + release its files + reopen its unfinished tasks),
    * or resume it.
    */
+  /**
+   * Start a new chapter: archive the chat, keep summary / memory / tasks. Members are told
+   * to save a checkpoint and, if their app allows, continue in a fresh conversation, which
+   * is the biggest token saving there is (the app stops rereading the old conversation).
+   */
+  new_chapter(actor, { summary }) {
+    this._leadOrHuman(actor);
+    if (summary && String(summary).trim()) this.s.summary = { text: cleanText(summary, 6000, 'Summary').text, by: actor.id, ts: now(), seq: this.s.seq };
+    if (!this.s.summary) throw new RoomError('Write a summary first (goal, decisions, who does what, what is left) so nobody loses context: pass it as summary.');
+    const chapter = this.s.chapter || 1;
+    const dir = path.join(this.dataDir, 'archive');
+    fs.mkdirSync(dir, { recursive: true });
+    const archived = this.s.messages.length;
+    writeJson(path.join(dir, `chapter-${chapter}.json`), { chapter, endedAt: new Date().toISOString(), summary: this.s.summary.text, messages: this.s.messages });
+    // Keep what someone has not read yet and is meant for them (a question, a task), so nothing
+    // in flight gets lost; everything else lives on in the archive and the summary.
+    const active = Object.values(this.s.members).filter((mem) => this.memberStatus(mem) !== 'offline');
+    const addressed = (mem, m) => {
+      if (m.kind === 'system' || m.from === mem.id || !this._relevantFor(mem, m)) return false;
+      const t = m.taskId && this.s.tasks[m.taskId];
+      return m.to === mem.id || m.from === HUMAN_ID || mentions(m.text, mem.name) || (t && (t.to === mem.id || t.owner === mem.id));
+    };
+    this.s.messages = this.s.messages.filter((m) => active.some((mem) => m.seq > (mem.cursor || 0) && addressed(mem, m))).slice(-15);
+    this.s.chapter = chapter + 1;
+    this.s.chapterStartSeq = this.s.seq;
+    this._system(`📖 Chapter ${chapter + 1} started by ${this._nameOf(actor.id)}. The old chat was archived. Where we are:\n${this.s.summary.text}\n\nTo save tokens: write a short checkpoint (update_me checkpoint: what you are doing, next steps), then continue in a fresh conversation if your app allows. Rejoin with your token and you get this summary, your checkpoint and your tasks.`);
+    return { chapter: chapter + 1, archived_messages: archived };
+  },
+
+  chapters() {
+    const dir = path.join(this.dataDir, 'archive');
+    const list = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^chapter-\d+\.json$/.test(f)).map((f) => Number(f.match(/\d+/)[0])).sort((a, b) => a - b) : [];
+    return { current: this.s.chapter || 1, archived: list };
+  },
+
   control_member(actor, { name, action, reason }) {
     this._leadOrHuman(actor, true);
     const m = this.memberByName(name);
@@ -1368,7 +1461,7 @@ export const RULES = [
   'Keep messages short and concrete: what you did, what you found, what you need.',
 ];
 
-function guidance(room, actor, lead, msgs, tasks, queued = 0) {
+function guidance(room, actor, lead, msgs, tasks, queued = 0, { timeoutMs = 0 } = {}) {
   const more = queued ? ` ${queued} more message(s) are queued: call wait again right away to get them.` : '';
   if (actor.paused) return `You are PAUSED by ${room._nameOf(actor.paused.by)}${actor.paused.reason ? ` (${actor.paused.reason})` : ''}. Do not change anything. Call wait again and wait to be resumed.${more}`;
   if (room.s.paused) return `The room is PAUSED. Finish your current step, then call wait again.${more}`;
@@ -1403,7 +1496,17 @@ function guidance(room, actor, lead, msgs, tasks, queued = 0) {
     });
     if (orphans.length) g += ` ${orphans.map((t) => `${t.id} (${room._nameOf(t.owner || t.to)})`).join(', ')} ${orphans.length > 1 ? 'are' : 'is'} stuck with someone away or disconnected: reassign (ask_member with to "auto").`;
   }
-  if (isLead && room.s.seq - (room.s.summary?.seq || 0) > SUMMARY_NUDGE) {
+  // Polling costs tokens: every check makes the app reread its whole conversation.
+  if (!msgs.length && !tasks.mine.length && (actor._empty || 0) >= REST_AFTER && timeoutMs < 120_000) {
+    return (actor.via === 'cli'
+      ? `Nothing is happening. To save tokens, run \`crewroom wait --as ${/\s/.test(actor.name) ? `"${actor.name}"` : actor.name} --timeout 3600\` as a background command if your app can (it wakes you when something concerns you), and end your turn.`
+      : actor.via === 'mcp (local)'
+        ? `Nothing is happening. To save tokens, stop checking. If you can run a terminal command in the background that wakes you when it ends, run \`crewroom wait --token ${actor.token} --timeout 3600\` in the project folder; otherwise end your turn and you will see what happened when you are called back.`
+        : 'Nothing is happening. To save tokens, stop checking now and end your turn; you will see what happened when you are called back.') + more;
+  }
+  if (isLead && room.s.messages.length > CHAPTER_NUDGE) {
+    g += ` The chat is long (${room.s.messages.length} messages in this chapter): start a new chapter (lead_action new_chapter, value = a summary). Everyone keeps the summary, memory and tasks, and can continue in a fresh, cheaper conversation.`;
+  } else if (isLead && room.s.seq - (room.s.summary?.seq || 0) > SUMMARY_NUDGE) {
     g += ' The chat is getting long: when you have a moment, write a short summary (goal, decisions, who does what, what is left) with set_summary, so everyone catches up cheaply.';
   }
   return g + more;
@@ -1481,6 +1584,6 @@ function describeAction(action, a) {
     command_result: 'waiting for a command', note: 'taking notes', notes: 'reading notes', read_messages: 'reading history', read_message: 'reading a message',
     set_summary: 'writing the summary', set_brief: 'writing the brief', set_activity: null, report_usage: null, join: 'joining',
     remember: 'saving to memory', recall: 'searching memory', forget: 'cleaning memory', control_member: 'managing the team', wait_task: 'waiting for a teammate',
-    update_me: null, set_focus: null,
+    update_me: null, set_focus: null, new_chapter: 'starting a new chapter', chapters: null,
   }[action] ?? null;
 }

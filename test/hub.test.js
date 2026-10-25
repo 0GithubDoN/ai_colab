@@ -265,3 +265,34 @@ test('invite prompt: ready to paste, with code, role and how to join', async () 
   assert.match(prompt, /You lead:/);
   assert.equal((await fetch(`${hub.localBase}/r/${room.code}/prompt`)).status, 403);
 });
+
+test('lite profile drops the file tools; ?wait sets the default wait; public waits stay under the tunnel limit', async () => {
+  const full = await mcpClient(`${hub.localBase}/r/${room.code}/mcp`);
+  const lite = await mcpClient(`${hub.localBase}/r/${room.code}/mcp?profile=lite&wait=600`);
+  const fullTools = (await full.client.listTools()).tools;
+  const liteTools = (await lite.client.listTools()).tools;
+  assert.equal(fullTools.length - liteTools.length, 8);
+  assert.ok(!liteTools.some((t) => ['read_file', 'write_file', 'edit_file', 'run_command'].includes(t.name)));
+  assert.ok(liteTools.some((t) => t.name === 'share_file'));
+  assert.ok(JSON.stringify(liteTools).length < JSON.stringify(fullTools).length * 0.8, 'lite list is smaller');
+  assert.match(liteTools.find((t) => t.name === 'wait_for_updates').inputSchema.properties.timeout_seconds.description, /Default 600/);
+  await full.client.close();
+  await lite.client.close();
+});
+
+test('fresh-chat prompt and archived chapters are available to the human only', async () => {
+  const api = (action, body) => fetch(`${hub.localBase}/r/${room.code}/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-admin-key': room.adminKey }, body: JSON.stringify(body) }).then((r) => r.json());
+  const joined = await fetch(`${hub.localBase}/r/${room.code}/api/join`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Fresh' }) }).then((r) => r.json());
+  const prompt = await (await fetch(`${hub.localBase}/r/${room.code}/prompt?key=${room.adminKey}&name=Fresh&resume=1`)).text();
+  assert.match(prompt, new RegExp(`join_room with token "${joined.your_token}"`));
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/prompt?key=${room.adminKey}&name=Nobody&resume=1`)).status, 404);
+
+  const before = room.s.chapter || 1;
+  await api('send', { text: 'before the new chapter' });
+  const r = await api('new_chapter', { summary: 'Where we are: testing chapters.' });
+  assert.equal(r.chapter, before + 1);
+  const text = await (await fetch(`${hub.localBase}/r/${room.code}/archive/${before}?key=${room.adminKey}`)).text();
+  assert.match(text, /before the new chapter/);
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/archive/${before}`)).status, 403);
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/archive/99?key=${room.adminKey}`)).status, 404);
+});

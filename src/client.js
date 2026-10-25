@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { homeDir, hubFile, readJson, CLI_PATH, DEFAULT_PORT, PROJECT_DIR } from './util.js';
+import { homeDir, hubFile, readJson, CLI_PATH, DEFAULT_PORT, PROJECT_DIR, VERSION } from './util.js';
 
 async function health(port) {
   try {
@@ -19,12 +19,19 @@ export async function runningHub(home = homeDir()) {
   const info = readJson(hubFile(home));
   if (!info?.port) return null;
   const h = await health(info.port);
-  return h?.app === 'crewroom' && h.hubId === info.hubId ? info : null;
+  return h?.app === 'crewroom' && h.hubId === info.hubId ? { ...info, version: h.version } : null;
 }
 
 /** Make sure a hub is running in the background; start one if needed. */
 export async function ensureHub({ home = homeDir(), port, quietSpawn = true } = {}) {
-  const existing = await runningHub(home);
+  let existing = await runningHub(home);
+  // After an update, an old hub may still be running the old code: replace it. Rooms are
+  // saved and reopen, and apps reconnect by themselves.
+  if (existing && existing.version && existing.version !== VERSION) {
+    await hubApi(existing, 'shutdown', {}).catch(() => {});
+    for (let i = 0; i < 40 && (await runningHub(home)); i++) await new Promise((r) => setTimeout(r, 100));
+    existing = null;
+  }
   if (existing) return existing;
   const logFile = path.join(home, 'hub.log');
   const out = fs.openSync(logFile, 'a');
