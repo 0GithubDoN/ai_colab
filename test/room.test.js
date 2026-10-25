@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Room, HUMAN } from '../src/room.js';
+import { formatWait } from '../src/format.js';
 
 const tmpProject = () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewroom-p-'));
@@ -402,4 +403,81 @@ test('memory: remember facts, recall only the best matches, private entries stay
   assert.equal((await room.call('recall', b, { query: 'deploy key' })).memories.length, 0);
   assert.match((await room.call('join', null, { name: 'Late' })).memory, /shared memories: use recall/);
   room.close();
+});
+
+test('a quiet wait is one short line; after a few empty checks the AI is told to rest', async () => {
+  const { room, members: [, gpt] } = await setup('Claude', 'ChatGPT');
+  let r;
+  for (let i = 0; i < 3; i++) r = await room.call('wait', gpt, { timeout_seconds: 0 });
+  assert.equal(r.quiet, true);
+  assert.match(formatWait(r), /^nothing new\. next: /);
+  assert.doesNotMatch(formatWait(r), /\n/);
+  assert.match(r.guidance, /crewroom wait --as ChatGPT --timeout 3600` as a background command.*end your turn/);
+  assert.deepEqual(gpt.stats, { checks: 4, empty: 3 }); // the first check (in setup) had the join news
+  // Anything that concerns it resets the streak.
+  await room.call('send', room.memberByName('Claude'), { text: '@ChatGPT review app.js please' });
+  r = await room.call('wait', gpt, { timeout_seconds: 0 });
+  assert.equal(r.quiet, undefined);
+  assert.equal(gpt._empty, 0);
+  // A long wait split into back-to-back calls (CLI, bridge) counts as one check.
+  for (let i = 0; i < 3; i++) await room.call('wait', gpt, { timeout_seconds: 0.05 });
+  assert.equal(gpt.stats.checks, 6);
+});
+
+test('a cancelled wait keeps messages unread for the next one', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  const ac = new AbortController();
+  const pending = room.call('wait', gpt, { timeout_seconds: 30, signal: ac.signal });
+  setTimeout(() => ac.abort(), 30);
+  await assert.rejects(pending, /cancelled/);
+  await room.call('send', claude, { text: '@ChatGPT are you there?' });
+  const r = await room.call('wait', gpt, { timeout_seconds: 0 });
+  assert.equal(r.new_messages.length, 1);
+  // A signal that is not a real AbortSignal (e.g. from JSON) is ignored.
+  assert.equal((await room.call('wait', gpt, { timeout_seconds: 0, signal: {} })).quiet, true);
+});
+
+test('new chapter: archives the chat, keeps what is still unread for someone, and members resume with a checkpoint', async () => {
+  const { room, members: [claude, gpt, gemini] } = await setup('Claude', 'ChatGPT', 'Gemini');
+  for (let i = 0; i < 5; i++) await room.call('send', claude, { text: `progress note ${i}` });
+  await room.call('send', claude, { text: '@Gemini make the icon' });
+  for (const m of [claude, gpt]) await room.call('wait', m, { timeout_seconds: 0 });
+  await assert.rejects(room.call('new_chapter', gpt, { summary: 'x' }), /Only the lead/);
+  await assert.rejects(room.call('new_chapter', claude, {}), /summary/);
+  await room.call('update_me', gpt, { checkpoint: 'Reviewing app.js; next: storage tests' });
+  await room.call('ask', claude, { to: 'ChatGPT', title: 'Review app.js' });
+  await room.call('wait', gpt, { timeout_seconds: 0 });
+
+  const r = await room.call('new_chapter', claude, { summary: 'Goal: todo app. Gemini: icon. ChatGPT: review.' });
+  assert.equal(r.chapter, 2);
+  assert.equal(room.snapshot().chapter, 2);
+  // Gemini has not read its request yet: it survives the reset; the progress notes do not.
+  const texts = room.s.messages.map((m) => m.text);
+  assert.ok(texts.includes('@Gemini make the icon'));
+  assert.ok(!texts.some((t) => t.startsWith('progress note')));
+  assert.match(room.chapterText(1), /progress note 4/);
+  assert.match(room.chapterText(1), /Summary at the end:\nGoal: todo app/);
+  assert.throws(() => room.chapterText('../x'), /No such chapter/);
+  assert.deepEqual((await room.call('chapters', claude)).archived, [1]);
+  const forGemini = await room.call('wait', gemini, { timeout_seconds: 0 });
+  assert.ok(forGemini.new_messages.some((m) => m.text === '@Gemini make the icon'));
+  assert.ok(forGemini.new_messages.some((m) => /Chapter 2 started/.test(m.text)));
+
+  // ChatGPT continues in a fresh conversation: its token brings back what it needs.
+  const back = await room.call('join', null, { token: gpt.token, name: 'whatever' });
+  assert.equal(back.your_checkpoint, 'Reviewing app.js; next: storage tests');
+  assert.equal(back.your_tasks[0].title, 'Review app.js');
+  assert.match(back.summary, /Goal: todo app/);
+  assert.match(back.next_step, /You are back/);
+});
+
+test('fresh-chat prompt carries the member token; checkpoint can be cleared', async () => {
+  const { room, members: [, gpt] } = await setup('Claude', 'ChatGPT');
+  const { invitePrompt } = await import('../src/invite.js');
+  const p = invitePrompt(room, { links: { invite: 'http://x/join' }, member: gpt });
+  assert.match(p, new RegExp(`call join_room with token "${gpt.token}"`));
+  assert.match(p, /You are: ChatGPT/);
+  await room.call('update_me', gpt, { checkpoint: 'something' });
+  assert.equal((await room.call('update_me', gpt, { checkpoint: '' })).checkpoint, 'cleared');
+  assert.equal(gpt.checkpoint, undefined);
 });

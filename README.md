@@ -164,8 +164,33 @@ before it runs out). Logs are read **locally only**; turn it off in Settings.
 
 ### Fewer tokens, not more
 
-Several AIs sharing a job should cost less than one AI doing everything, not more. Crewroom
-is built for that:
+Several AIs sharing a job should cost less than one AI doing everything, not more. First,
+where the tokens actually go:
+
+- **The room's chat length is not the problem.** An AI never rereads the room. Each check
+  only brings what is new and meant for it.
+- **The AI's own conversation is.** Its app sends the AI's whole conversation (every
+  message, every tool call and result so far) to the model on every step. So each check
+  costs more than the last, and an AI that checks the room 200 times in one long
+  conversation pays for that conversation 200 times.
+- **Empty checks add up.** A check that finds nothing still costs a full reread.
+
+So Crewroom cuts both:
+
+- **Fewer checks.** One check can wait a long time and wakes as soon as something
+  concerns the AI: up to 25 minutes in Codex and Gemini CLI, 10 in Claude Code (set up by
+  `crewroom connect`). After a few empty checks, an AI is told to stop and end its turn.
+  Apps that can run a background command (Claude Code, Antigravity) wait for free with
+  `crewroom wait --timeout 3600`.
+- **A fresh conversation instead of a long one.** Click **📖 New chapter** (or the lead
+  calls it) when the chat gets long. The chat is archived (you can still read it) and
+  everyone continues from the summary. Each AI saves a short **checkpoint** (what it is doing,
+  what is next). In a new conversation it rejoins with its token and gets back the
+  summary, its checkpoint, its tasks and the last few messages for it. Nothing is lost,
+  and every step after that is cheap again. **↻ Fresh chat** on an AI's card gives you the
+  prompt to paste into its new chat. The button turns orange after about 200 messages.
+- **Nothing new is one line.** A check that finds nothing returns one short line, not a
+  status report.
 
 - **Focus mode**: each member only receives what concerns it (direct messages,
   @mentions, its tasks, the lead, you). Other chatter arrives as a one-line count. The lead
@@ -174,15 +199,17 @@ is built for that:
   come at a time, and long ones are trimmed (the full text is one call away). Unchanged
   tasks show as one line.
 - **A short tool list**: apps resend every tool definition with every request, so Crewroom
-  keeps its MCP tools to 23 with short descriptions, about 3k tokens instead of 6k.
+  keeps its MCP tools to 23 with short descriptions (about 3k tokens). Apps that edit
+  files with their own tools (Claude Code, Codex, Antigravity, Cursor...) get a lite list
+  of 15 without the file tools.
 - **Summary instead of history**: the lead keeps a short room summary (it's nudged when
   the chat gets long), and newcomers read that instead of the whole chat.
 - **Memory instead of rereading**: `recall` returns only the few facts that match.
 - **Shared work**: tasks go to whoever is free and has usage left (`auto`), so no single
   AI burns through its quota.
 
-The dashboard shows roughly how many tokens the room sent each AI and how many focus
-mode saved.
+The dashboard shows roughly how many tokens the room sent each AI, how many focus mode
+saved, and how often each AI checked the room (and how many of those checks were empty).
 
 ### When an AI goes quiet or the lead runs out
 
@@ -249,6 +276,9 @@ crewroom status | tasks | history | assets | notes | changes --as Claude
 crewroom away | back --as Claude
 crewroom remember | recall --as Claude "text"        shared memory
 crewroom me --as Claude --avatar lorelei:sunny --model "..."
+crewroom checkpoint --as Claude "doing X; next Y"   kept for a fresh conversation
+crewroom chapter --as Claude "where we are"         (lead) archive the chat, start fresh
+crewroom invite --resume --name Codex               prompt to continue Codex in a new chat
 crewroom say --as Claude --file msg.md               (or --stdin) for long or code-heavy text
 crewroom brief | lead <Name> | pause | resume --as Claude
 crewroom pause | resume | halt --as Claude --name Codex "reason"   (lead: control one AI)

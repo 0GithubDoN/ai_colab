@@ -305,7 +305,7 @@ export class Hub {
       return this._hubApi(req, res, parts.slice(1));
     }
 
-    if (url.pathname === '/mcp') return this._mcp(req, res, { roomCode: null, local });
+    if (url.pathname === '/mcp') return this._mcp(req, res, { roomCode: null, local, ...mcpOptions(url) });
 
     if (parts[0] === 'r' && parts[1]) {
       const room = this.room(parts[1]);
@@ -373,7 +373,11 @@ export class Hub {
 
     if (sub[0] === 'prompt') {
       if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
-      return sendText(res, 200, invitePrompt(room, { links: this.links(room), name: url.searchParams.get('name') || undefined, role: url.searchParams.get('role') || 'member' }));
+      const name = url.searchParams.get('name') || undefined;
+      // ?resume=1: a member continues in a fresh conversation (its token is in the prompt).
+      const member = url.searchParams.get('resume') && name ? room.memberByName(name) : undefined;
+      if (url.searchParams.get('resume') && !member) throw new RoomError(`No member named "${name}".`, 404);
+      return sendText(res, 200, invitePrompt(room, { links: this.links(room), name, role: url.searchParams.get('role') || 'member', member }));
     }
 
     if (sub[0] === 'dashboard') {
@@ -394,12 +398,23 @@ export class Hub {
       return sendJson(res, 200, { messages: room.dashboardMessages({ before: Number(url.searchParams.get('before')) || undefined, limit: 100 }) });
     }
 
+    if (sub[0] === 'archive' && sub[1]) {
+      if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
+      return sendText(res, 200, room.chapterText(sub[1]));
+    }
+
     if (sub[0] === 'events') {
       if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
       // First push sends recent messages; later pushes only the new ones, so a long chat stays cheap.
       let lastSeq = 0;
+      let chapter = room.s.chapter || 1;
       const push = () => {
+        // A new chapter replaced the chat: start the dashboard's feed over.
+        if ((room.s.chapter || 1) !== chapter) {
+          chapter = room.s.chapter || 1;
+          lastSeq = 0;
+        }
         const messages = room.dashboardMessages({ after: lastSeq, limit: lastSeq ? 500 : 200 });
         const reset = lastSeq === 0;
         if (messages.length) lastSeq = messages[messages.length - 1].seq;
@@ -465,18 +480,24 @@ export class Hub {
       if (action === 'join') return sendJson(res, 200, await room.call('join', null, { via: local ? 'cli' : 'http (public link)', ...args, token: tok }));
       const member = room.memberByToken(tok);
       if (!member) throw new RoomError('Missing or unknown token. Join first.', 401);
+      // A CLI wait that gets killed (e.g. a background command) must not swallow messages.
+      if (action === 'wait') {
+        const ac = new AbortController();
+        res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+        args.signal = ac.signal;
+      }
       const result = JSON.stringify(await room.call(action, member, args));
       room.account(member, JSON.stringify(args).length, result.length);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(result);
     }
 
-    if (sub[0] === 'mcp') return this._mcp(req, res, { roomCode: room.code, local });
+    if (sub[0] === 'mcp') return this._mcp(req, res, { roomCode: room.code, local, ...mcpOptions(url) });
 
     throw new RoomError('Not found.', 404);
   }
 
-  async _mcp(req, res, { roomCode, local }) {
+  async _mcp(req, res, { roomCode, local, profile, defaultWait }) {
     const sid = req.headers['mcp-session-id'];
     let body;
     if (req.method === 'POST') {
@@ -496,7 +517,7 @@ export class Hub {
     }
 
     const initializing = req.method === 'POST' && (Array.isArray(body) ? body.some((m) => isInitializeRequest(m)) : isInitializeRequest(body));
-    const server = createMcpServer({ hub: this, roomCode, local });
+    const server = createMcpServer({ hub: this, roomCode, local, profile, defaultWait });
     let transport;
     if (initializing) {
       transport = new StreamableHTTPServerTransport({
@@ -516,6 +537,13 @@ export class Hub {
 }
 
 // ---------------- helpers ----------------
+
+/** ?profile=lite and ?wait=<seconds> on the MCP URL (set by `crewroom connect` per app). */
+function mcpOptions(url) {
+  const profile = url.searchParams.get('profile') === 'lite' ? 'lite' : undefined;
+  const wait = Number(url.searchParams.get('wait'));
+  return { profile, defaultWait: Number.isFinite(wait) && wait > 0 ? wait : undefined };
+}
 
 function readBody(req) {
   return new Promise((resolve, reject) => {

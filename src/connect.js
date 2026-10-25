@@ -30,27 +30,31 @@ function claudeDesktopFiles() {
   return files;
 }
 
-export function serverEntry() {
-  const entry = { command: process.execPath, args: [CLI_PATH, 'mcp'] };
+export function serverEntry(app) {
+  const entry = { command: process.execPath, args: [CLI_PATH, 'mcp', ...(app?.args || [])] };
   if (process.env.CREWROOM_HOME) entry.env = { CREWROOM_HOME: process.env.CREWROOM_HOME };
   return entry;
 }
 
 const dirExists = (f) => fs.existsSync(path.dirname(f));
+// --lite: the app edits files with its own tools, so it gets the room tools without the file
+// tools (fewer tool definitions resent with every request). --wait: how long one
+// wait_for_updates may block in this app; longer = fewer checks = fewer tokens.
+const LITE = ['--lite'];
 
 export const APPS = [
   { id: 'claude-desktop', label: 'Claude desktop app', type: 'json', key: 'mcpServers', files: claudeDesktopFiles, detect: dirExists, after: 'Fully quit Claude desktop (menu bar / tray icon → Quit) and open it again.' },
-  { id: 'claude-code', label: 'Claude Code', type: 'claude-cli', after: 'Start a new Claude Code session (or run /mcp to check).' },
-  { id: 'codex', label: 'Codex (app, CLI and IDE extension)', type: 'toml', files: () => [path.join(process.env.CODEX_HOME || path.join(H, '.codex'), 'config.toml')], detect: dirExists, after: 'Restart Codex.' },
+  { id: 'claude-code', label: 'Claude Code', type: 'claude-cli', args: [...LITE, '--wait', '600'], after: 'Start a new Claude Code session (or run /mcp to check).' },
+  { id: 'codex', label: 'Codex (app, CLI and IDE extension)', type: 'toml', args: [...LITE, '--wait', '1500'], toolTimeoutSec: 1800, files: () => [path.join(process.env.CODEX_HOME || path.join(H, '.codex'), 'config.toml')], detect: dirExists, after: 'Restart Codex.' },
   {
-    id: 'antigravity', label: 'Antigravity', type: 'json', key: 'mcpServers',
+    id: 'antigravity', label: 'Antigravity', type: 'json', key: 'mcpServers', args: LITE,
     files: () => [path.join(H, '.gemini', 'config', 'mcp_config.json'), path.join(H, '.gemini', 'antigravity', 'mcp_config.json')],
     detect: dirExists, after: 'In Antigravity open the MCP servers panel and press Refresh (or restart Antigravity).',
   },
-  { id: 'cursor', label: 'Cursor', type: 'json', key: 'mcpServers', files: () => [path.join(H, '.cursor', 'mcp.json')], detect: dirExists, after: 'Restart Cursor (or toggle the server in Settings → MCP).' },
-  { id: 'windsurf', label: 'Windsurf', type: 'json', key: 'mcpServers', files: () => [path.join(H, '.codeium', 'windsurf', 'mcp_config.json')], detect: dirExists, after: 'Press Refresh in Windsurf\'s MCP panel.' },
-  { id: 'vscode', label: 'VS Code (Copilot agent mode)', type: 'json', key: 'servers', vscode: true, files: () => [path.join(appSupport(), 'Code', 'User', 'mcp.json')], detect: dirExists, after: 'Reload VS Code; start the "crewroom" server from the MCP view if asked.' },
-  { id: 'gemini-cli', label: 'Gemini CLI', type: 'json', key: 'mcpServers', files: () => [path.join(H, '.gemini', 'settings.json')], detect: (f) => fs.existsSync(f), after: 'Restart Gemini CLI (or run /mcp to check).' },
+  { id: 'cursor', label: 'Cursor', type: 'json', key: 'mcpServers', args: LITE, files: () => [path.join(H, '.cursor', 'mcp.json')], detect: dirExists, after: 'Restart Cursor (or toggle the server in Settings → MCP).' },
+  { id: 'windsurf', label: 'Windsurf', type: 'json', key: 'mcpServers', args: LITE, files: () => [path.join(H, '.codeium', 'windsurf', 'mcp_config.json')], detect: dirExists, after: 'Press Refresh in Windsurf\'s MCP panel.' },
+  { id: 'vscode', label: 'VS Code (Copilot agent mode)', type: 'json', key: 'servers', vscode: true, args: LITE, files: () => [path.join(appSupport(), 'Code', 'User', 'mcp.json')], detect: dirExists, after: 'Reload VS Code; start the "crewroom" server from the MCP view if asked.' },
+  { id: 'gemini-cli', label: 'Gemini CLI', type: 'json', key: 'mcpServers', args: [...LITE, '--wait', '1500'], timeoutMs: 1_800_000, files: () => [path.join(H, '.gemini', 'settings.json')], detect: (f) => fs.existsSync(f), after: 'Restart Gemini CLI (or run /mcp to check).' },
 ];
 
 function which(cmd) {
@@ -75,18 +79,19 @@ function readConfigJson(file) {
 }
 
 function jsonEntry(app) {
-  const e = serverEntry();
+  const e = serverEntry(app);
+  if (app.timeoutMs) e.timeout = app.timeoutMs;
   return app.vscode ? { type: 'stdio', ...e } : e;
 }
 
-function tomlBlock() {
-  const e = serverEntry();
+function tomlBlock(app) {
+  const e = serverEntry(app);
   const lines = [
     `[mcp_servers.${SERVER}]`,
     `command = ${JSON.stringify(e.command)}`,
     `args = [${e.args.map((a) => JSON.stringify(a)).join(', ')}]`,
     'startup_timeout_sec = 30',
-    'tool_timeout_sec = 300',
+    `tool_timeout_sec = ${app.toolTimeoutSec || 300}`,
   ];
   if (e.env) lines.push(`env = { CREWROOM_HOME = ${JSON.stringify(e.env.CREWROOM_HOME)} }`);
   return lines.join('\n');
@@ -156,7 +161,7 @@ export function configureApp(app, { remove = false } = {}) {
   const results = [];
   if (app.type === 'claude-cli') {
     const bin = which('claude');
-    const e = serverEntry();
+    const e = serverEntry(app);
     const manual = `claude mcp add --scope user ${SERVER} -- "${e.command}" "${e.args.join('" "')}"`;
     if (!bin) return [{ ok: false, message: `Claude Code CLI not found. If you use Claude Code, run:\n    ${manual}` }];
     // On Windows `claude` is usually a .cmd shim, which needs a shell (and quoted arguments).
@@ -178,7 +183,7 @@ export function configureApp(app, { remove = false } = {}) {
     try {
       if (app.type === 'toml') {
         const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-        const next = tomlReplace(text, remove ? null : tomlBlock());
+        const next = tomlReplace(text, remove ? null : tomlBlock(app));
         if (next !== text) {
           backup(file);
           fs.writeFileSync(file, next);
@@ -197,7 +202,7 @@ export function configureApp(app, { remove = false } = {}) {
       }
       results.push({ ok: true, message: `${remove ? 'removed from' : 'updated'} ${file}` });
     } catch (err) {
-      const snippet = app.type === 'toml' ? tomlBlock() : JSON.stringify({ [app.key]: { [SERVER]: jsonEntry(app) } }, null, 2);
+      const snippet = app.type === 'toml' ? tomlBlock(app) : JSON.stringify({ [app.key]: { [SERVER]: jsonEntry(app) } }, null, 2);
       results.push({ ok: false, message: `could not edit ${file} (${err.message}). Add this yourself:\n${snippet}` });
     }
   }

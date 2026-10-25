@@ -13,14 +13,14 @@ import path from 'node:path';
 import { RoomError, RULES } from './room.js';
 import { normalizeCode, VERSION, IMAGE_EXTS } from './util.js';
 import { formatWait, compactJson } from './format.js';
-import { AVATAR_STYLE_NAMES } from './avatars.js';
 
 const RO = { readOnlyHint: true, openWorldHint: false };
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
 const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
 
 /**
- * ctx: { hub, roomCode?: string (fixed room for /r/<code>/mcp), local: boolean, token?: string }
+ * ctx: { hub, roomCode?: string (fixed room for /r/<code>/mcp), local: boolean, token?: string,
+ *        profile?: 'lite' (no file tools: for apps that have their own), defaultWait?: seconds }
  */
 export function createMcpServer(ctx) {
   const { hub } = ctx;
@@ -46,10 +46,10 @@ export function createMcpServer(ctx) {
   const fail = (err) => ({ isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] });
 
   /** Run a room action for the joined member; `format` turns the result into text. Counts the tokens it costs. */
-  const act = (action, mapArgs = (a) => a, format) => async (args = {}) => {
+  const act = (action, mapArgs = (a) => a, format) => async (args = {}, extra) => {
     try {
       const { room, member } = who();
-      const [name, mapped] = typeof action === 'function' ? action(args) : [action, mapArgs(args)];
+      const [name, mapped] = typeof action === 'function' ? action(args) : [action, mapArgs(args, extra)];
       const result = await room.call(name, member, mapped);
       const out = text(format ? format(result) : result);
       room.account(member, JSON.stringify(args).length, out.content[0].text.length);
@@ -59,21 +59,29 @@ export function createMcpServer(ctx) {
     }
   };
 
-  const tool = (name, description, shape, annotations, handler, meta) =>
+  // Apps that edit files with their own tools (Claude Code, Codex, Antigravity, Cursor...) get
+  // a lite set without the room's file tools: fewer definitions resent with every request.
+  const LITE_SKIP = new Set(['list_files', 'read_file', 'search_files', 'project_changes', 'write_file', 'edit_file', 'restore_file', 'run_command']);
+  const tool = (name, description, shape, annotations, handler, meta) => {
+    if (ctx.profile === 'lite' && LITE_SKIP.has(name)) return;
     server.registerTool(name, { description, inputSchema: shape, annotations, ...(meta ? { _meta: meta } : {}) }, handler);
+  };
+  const defaultWait = Math.min(Math.max(Number(ctx.defaultWait) || 45, 5), 3600);
+  // The style list is long and would be resent with every request; a wrong style returns it.
+  const AVATAR_HINT = 'Your picture, "style:seed", e.g. "lorelei:sunny" or "bottts:me" (a wrong style lists all styles).';
 
   // ---------------- room ----------------
 
   tool(
     'join_room',
-    'Join a Crewroom room (the user gives you the invite code or link). Returns your token, the lead, brief, summary and rules.',
+    'Join a Crewroom room (the user gives you the invite code or link). Returns your token, the lead, brief, summary and rules. Continuing in a fresh conversation? Pass your token: you get the summary, your checkpoint and your tasks.',
     {
       invite: z.string().optional().describe('Invite code (ABCD-EFGH-JKLM) or link.'),
       name: z.string().describe('Short name others @mention, e.g. "ChatGPT".'),
       app: z.string().optional().describe('App you run in.'),
       model: z.string().optional().describe('Your exact model, as far as you know it.'),
       capabilities: z.array(z.string()).optional().describe('e.g. image-generation, web-search, code-execution, terminal, browser.'),
-      avatar: z.string().optional().describe(`Your picture: "style:seed". Styles: ${AVATAR_STYLE_NAMES.join(', ')}.`),
+      avatar: z.string().optional().describe(AVATAR_HINT),
       lead: z.boolean().optional().describe('Become lead if there is none.'),
       listen: z.enum(['focus', 'all']).optional().describe('focus (default for members) or all (default for the lead).'),
       token: z.string().optional().describe('Old token, to come back as the same member.'),
@@ -111,13 +119,17 @@ export function createMcpServer(ctx) {
 
   tool(
     'wait_for_updates',
-    'New messages and tasks for you; waits up to timeout_seconds if nothing is new. Call in a loop and follow the "next:" line.',
+    'New messages and tasks for you; waits up to timeout_seconds if nothing is new. Follow the "next:" line. Every check costs tokens (your app rereads its conversation), so wait as long as your app allows.',
     {
-      timeout_seconds: z.number().optional().describe('Default 40; keep under ~50 unless your app allows long calls.'),
+      timeout_seconds: z.number().optional().describe(`Default ${defaultWait}. Longer waits = fewer checks = fewer tokens.`),
       include_history: z.number().optional().describe('Also return this many earlier messages.'),
     },
     RO,
-    act('wait', (a) => ({ timeout_seconds: 40, ...a }), formatWait),
+    // Public links go through a tunnel that drops requests after ~100s, so keep those waits shorter.
+    act('wait', (a, extra) => {
+      const seconds = a.timeout_seconds ?? defaultWait;
+      return { ...a, timeout_seconds: ctx.local ? seconds : Math.min(seconds, 90), signal: extra?.signal };
+    }, formatWait),
   );
 
   tool('room_status', 'Members (status, model, usage), open tasks, files being edited, summary, decisions, notes, shared files.', {}, RO, act('status'));
@@ -175,13 +187,14 @@ export function createMcpServer(ctx) {
 
   tool(
     'update_me',
-    'Your profile and state: what you are doing (activity), status away/online, focus or all, model, avatar ("style:seed"), and usage numbers if your app shows them.',
+    'Your profile and state: activity, status away/online, focus or all, model, avatar ("style:seed"), checkpoint (private notes to self: what you are doing and next steps; returned when you rejoin, e.g. in a fresh conversation), and usage numbers if your app shows them.',
     {
       activity: z.string().optional(),
       status: z.enum(['online', 'away']).optional(),
       focus: z.enum(['focus', 'all']).optional(),
       model: z.string().optional(),
-      avatar: z.string().optional().describe(`"style:seed". Styles: ${AVATAR_STYLE_NAMES.join(', ')}.`),
+      avatar: z.string().optional().describe(AVATAR_HINT),
+      checkpoint: z.string().optional(),
       context_used_percent: z.number().optional(),
       session_limit_used_percent: z.number().optional(),
       weekly_limit_used_percent: z.number().optional(),
@@ -213,12 +226,13 @@ export function createMcpServer(ctx) {
 
   tool(
     'lead_action',
-    'Lead only. pause / resume: one member (name) or the whole team (no name). stop: pause a member, free its files, reopen its tasks (for mistakes or poor work). lead: hand over the lead (name). brief: set the brief (value). focus: a member\'s focus (name, value focus|all). value can carry a reason.',
-    { action: z.enum(['pause', 'resume', 'stop', 'lead', 'brief', 'focus']), name: z.string().optional(), value: z.string().optional() },
+    'Lead only. new_chapter: archive the chat and start fresh (value = summary); everyone keeps summary, memory and tasks and can continue in a cheaper fresh conversation. pause / resume: one member (name) or the whole team. stop: pause a member, free its files, reopen its tasks. lead: hand over the lead (name). brief: set the brief (value). focus: a member\'s focus (name, value focus|all).',
+    { action: z.enum(['new_chapter', 'pause', 'resume', 'stop', 'lead', 'brief', 'focus']), name: z.string().optional(), value: z.string().optional() },
     WRITE,
     act((a) => {
       if (['pause', 'resume', 'stop'].includes(a.action) && a.name) return ['control_member', { name: a.name, action: a.action, reason: a.value }];
       if (a.action === 'stop') throw new RoomError('stop needs the member name.');
+      if (a.action === 'new_chapter') return ['new_chapter', { summary: a.value }];
       return {
         brief: ['set_brief', { brief: a.value }],
         lead: ['set_lead', { name: a.name || a.value }],
