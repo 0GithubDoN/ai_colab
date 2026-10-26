@@ -235,7 +235,8 @@ export class Hub {
   }
 
   _cleanup() {
-    const cutoff = Date.now() - 2 * 3600_000;
+    // Long: an AI that rests for hours (to save tokens) should find its session still there.
+    const cutoff = Date.now() - 24 * 3600_000;
     for (const [sid, s] of this.sessions) {
       if (s.lastUsed < cutoff) {
         s.transport.close().catch(() => {});
@@ -409,6 +410,7 @@ export class Hub {
       // First push sends recent messages; later pushes only the new ones, so a long chat stays cheap.
       let lastSeq = 0;
       let chapter = room.s.chapter || 1;
+      const seenSent = new Map(); // seq -> seen/reactions signature this dashboard has
       const push = () => {
         // A new chapter replaced the chat: start the dashboard's feed over.
         if ((room.s.chapter || 1) !== chapter) {
@@ -417,9 +419,18 @@ export class Hub {
         }
         const messages = room.dashboardMessages({ after: lastSeq, limit: lastSeq ? 500 : 200 });
         const reset = lastSeq === 0;
+        if (reset) seenSent.clear();
+        // "Seen by" and reaction changes on messages the dashboard already has: only what changed.
+        const meta = {};
+        for (const m of room.s.messages.slice(-500)) {
+          const sig = m.seenBy?.length || m.reactions ? `${m.seenBy?.length || 0}|${JSON.stringify(m.reactions || {})}` : '';
+          if (sig === (seenSent.get(m.seq) || '')) continue;
+          seenSent.set(m.seq, sig);
+          if (m.seq <= lastSeq && !reset) meta[m.seq] = { seenBy: room.seenNames(m) || null, reactions: room.reactionNames(m) || null };
+        }
         if (messages.length) lastSeq = messages[messages.length - 1].seq;
         else if (reset) lastSeq = room.s.seq;
-        res.write(`data: ${JSON.stringify({ ...room.snapshot({ messageLimit: 0 }), messages, reset, links: this.links(room) })}\n\n`);
+        res.write(`data: ${JSON.stringify({ ...room.snapshot({ messageLimit: 0 }), messages, meta, reset, links: this.links(room) })}\n\n`);
       };
       let timer = null;
       const onChange = () => { if (!timer) timer = setTimeout(() => { timer = null; push(); }, 120); };

@@ -36,17 +36,17 @@ You need [Node.js](https://nodejs.org) 20 or newer.
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/0GithubDoN/ai_colab/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/0GithubDoN/crewroom/main/install.ps1 | iex
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0GithubDoN/ai_colab/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/0GithubDoN/crewroom/main/install.sh | sh
 ```
 
 **Or with npm directly:**
 ```bash
-npm install -g https://github.com/0GithubDoN/ai_colab/archive/refs/heads/main.tar.gz
+npm install -g https://github.com/0GithubDoN/crewroom/archive/refs/heads/main.tar.gz
 crewroom connect
 ```
 
@@ -119,6 +119,21 @@ Agents that save images to disk (Antigravity, Codex...) just share the file.
 
 - **Clean chat**: long messages fold with a "Show more" arrow, routine updates collapse
   into one line, and filters show only chat, tasks or updates.
+- **Seen indicator**: each message shows which AIs actually received it (hover for the
+  names), so you know whether your message has reached them or is still waiting.
+- **Reactions**: you and the AIs react with an emoji instead of replying "ok". A reaction
+  wakes nobody and costs no tokens; the author sees it with its next real update.
+- **Your rules, your name**: in Settings, set your name (the AIs stop calling you "human")
+  and rules every AI follows. A line with `@Gemini` (or `@lead`) applies to that AI only.
+  Changed rules are sent to each AI right away and come back when it rejoins.
+- **No double work**: taking a task reserves its files for whoever does it, and each AI gets
+  a one-line "team now" (who is doing what) whenever that changes.
+- **Shared knowledge**: the lead (or you, in Notes → Memory → Import) imports a memory
+  file, e.g. Claude's notes about your project: one memory per bullet, duplicates merged,
+  grouped by kind and editable. List project knowledge files (like `CLAUDE.md`) in
+  Settings and every AI is told to read them when it joins.
+- **Reconnects by itself**: if an app restarts its connection, it carries on as the same
+  member without being told to rejoin (when only one member came from that app).
 - **Chat like Discord**: to everyone or one member. Type `@` in the dashboard to pick
   someone (`@Codex are you there?`); `@everyone` reaches all. AIs mention each other the same way.
 - **Split the work**: *"Gemini, make an icon"*, *"ChatGPT, review src/api.js"*. Each request

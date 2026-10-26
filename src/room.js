@@ -39,7 +39,7 @@ const REST_AFTER = 3; // empty short checks in a row before an AI is told to res
 const PAUSE_BLOCKS = new Set(['write_file', 'edit_file', 'restore_file', 'claim_file', 'save_asset', 'share_file', 'run_command', 'take_task', 'finish_task', 'ask', 'set_brief', 'set_summary']);
 // onlineSeconds: how long after its last contact an AI still counts as connected. Long, because
 // AIs often think or work for many minutes without touching the room.
-const DEFAULT_SETTINGS = { leadAwayMinutes: 10, onlineSeconds: 1800, commands: 'ask', readUsage: true };
+const DEFAULT_SETTINGS = { leadAwayMinutes: 10, onlineSeconds: 1800, commands: 'ask', readUsage: true, humanName: '', rules: '', knowledge: [] };
 
 export class Room extends EventEmitter {
   constructor({ projectRoot, name }) {
@@ -159,9 +159,32 @@ export class Room extends EventEmitter {
     return Object.values(this.s.members).find((m) => m.name.toLowerCase() === n || m.id === n) || null;
   }
 
+  _memoryTwin(actor, text, priv) {
+    const words = (s) => new Set(String(s).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
+    const a = words(text);
+    for (const e of this.s.memory) {
+      if (!!e.private !== !!priv || (priv && e.by !== actor.id)) continue;
+      const b = words(e.text);
+      const inter = [...a].filter((w) => b.has(w)).length;
+      const jaccard = inter / (a.size + b.size - inter || 1);
+      if (jaccard === 1) return { entry: e, same: true };
+      if (jaccard >= 0.8 && a.size >= 4) return { entry: e, same: false };
+    }
+    return null;
+  }
+
+  _setKnowledge(files) {
+    const list = toList(files).slice(0, 20).map((f) => this.safePath(f).rel);
+    const missing = list.filter((f) => !fs.existsSync(path.join(this.projectRoot, f)));
+    if (missing.length) throw new RoomError(`Not found in the project: ${missing.join(', ')}`);
+    const changed = list.join() !== (this.s.settings.knowledge || []).join();
+    this.s.settings.knowledge = list;
+    if (changed && list.length) this._system(`📚 Project knowledge to read first: ${list.join(', ')}`);
+  }
+
   _resolveTarget(to) {
     if (to === undefined || to === null || to === '' || /^(all|everyone|room|team)$/i.test(String(to))) return null;
-    if (/^(human|user|you|me)$/i.test(String(to))) return HUMAN_ID;
+    if (/^(human|user|you|me|owner)$/i.test(String(to)) || this._isHumanName(to)) return HUMAN_ID;
     if (/^lead(er)?$/i.test(String(to))) {
       if (!this.s.leadId) throw new RoomError('There is no lead in this room yet.');
       return this.s.leadId;
@@ -171,8 +194,26 @@ export class Room extends EventEmitter {
     return m.id;
   }
 
+  _isHumanName(name) {
+    const h = this.s.settings?.humanName;
+    return !!h && String(name).replace(/^@/, '').toLowerCase() === h.toLowerCase();
+  }
+
+  /**
+   * The human's room rules that apply to this member: lines without an @name apply to
+   * everyone; "@Gemini ..." lines only to Gemini ("@lead" to the lead).
+   */
+  _rulesFor(member) {
+    const lines = String(this.s.settings?.rules || '').split(/\r?\n/).map((l) => l.trim().replace(/^[-*•]\s*/, '')).filter(Boolean);
+    return lines.filter((line) => {
+      const targets = [...line.matchAll(/@([\p{L}\p{N}_.-]+)/gu)].map((x) => x[1].toLowerCase()).filter((t) => !['everyone', 'all', 'team'].includes(t) && !this._isHumanName(t) && t !== 'human');
+      if (!targets.length) return true;
+      return targets.includes(member.name.toLowerCase()) || (targets.includes('lead') && member.id === this.s.leadId);
+    });
+  }
+
   _nameOf(id) {
-    if (id === HUMAN_ID) return 'Human';
+    if (id === HUMAN_ID) return this.s.settings?.humanName || 'Human';
     if (id === 'system') return 'Room';
     return this.s.members[id]?.name || id;
   }
@@ -327,7 +368,45 @@ export class Room extends EventEmitter {
   dashboardMessages({ after = 0, before, limit = 200 } = {}) {
     let list = this.s.messages.filter((m) => m.seq > after && (!before || m.seq < before));
     list = list.slice(-limit);
-    return list.map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to, quiet: m.quiet || undefined }));
+    return list.map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to, quiet: m.quiet || undefined, seenBy: this.seenNames(m), reactions: this.reactionNames(m) }));
+  }
+
+  reactionNames(m) {
+    if (!m.reactions) return undefined;
+    const out = {};
+    for (const [emoji, ids] of Object.entries(m.reactions)) if (ids.length) out[emoji] = ids.map((id) => this._nameOf(id));
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  /** "Seen" means the message was actually delivered to that AI (not just skipped as chatter). */
+  /** One line: what every other member is busy with (tasks in progress and files being edited). */
+  teamNow(forMember) {
+    const parts = [];
+    for (const m of Object.values(this.s.members)) {
+      if (m.id === forMember?.id || this.memberStatus(m) === 'offline') continue;
+      const tasks = Object.values(this.s.tasks).filter((t) => t.owner === m.id && t.status === 'in_progress').map((t) => `${t.id} ${t.title.slice(0, 40)}`);
+      const files = Object.entries(this.s.claims).filter(([, c]) => c.memberId === m.id).map(([f]) => f);
+      if (tasks.length || files.length) parts.push(`${m.name}: ${[...tasks, ...(files.length ? [`editing ${files.slice(0, 4).join(', ')}${files.length > 4 ? ` +${files.length - 4}` : ''}`] : [])].join('; ')}`);
+    }
+    return parts.join(' | ');
+  }
+
+  _markSeen(actor, list) {
+    if (!actor || actor.id === HUMAN_ID) return;
+    let changed = false;
+    for (const m of list) {
+      if (m.kind === 'system' || m.from === actor.id) continue;
+      m.seenBy ||= [];
+      if (!m.seenBy.includes(actor.id)) {
+        m.seenBy.push(actor.id);
+        changed = true;
+      }
+    }
+    if (changed) this._changed('seen');
+  }
+
+  seenNames(m) {
+    return m.seenBy?.length ? m.seenBy.map((id) => this._nameOf(id)) : undefined;
   }
 
   _relevantFor(member, m) {
@@ -557,6 +636,9 @@ export class Room extends EventEmitter {
     return {
       ...pack,
       welcome: `You are "${member.name}" in room "${this.s.name}".`,
+      human: `${this._nameOf(HUMAN_ID)} (the person who owns this room and has the final word; @${this._nameOf(HUMAN_ID).replace(/\s+/g, '')} or to "human" to address them)`,
+      room_rules: this._rulesFor(member).length ? this._rulesFor(member) : undefined,
+      project_knowledge: this.s.settings.knowledge?.length ? `Read these first for project knowledge (with your own tools or read_file): ${this.s.settings.knowledge.join(', ')}` : undefined,
       your_token: member.token,
       role: member.id === this.s.leadId ? 'lead' : 'member',
       lead: this.leadStatus(),
@@ -685,7 +767,7 @@ const ACTIONS = {
     }
     name = String(name || '').trim().replace(/^@/, '').replace(/\s+/g, ' ').slice(0, 32);
     if (!name) throw new RoomError('Pick a short name for yourself, e.g. "Claude", "Gemini", "ChatGPT", "Codex".');
-    if (/^(all|everyone|room|team|human|user|you|me|lead|leader|system)$/i.test(name)) throw new RoomError(`"${name}" is reserved, pick another name.`);
+    if (/^(all|everyone|room|team|human|user|you|me|owner|lead|leader|system)$/i.test(name) || this._isHumanName(name)) throw new RoomError(`"${name}" is reserved, pick another name.`);
     let member = this.memberByName(name);
     if (member) {
       // Same name again = the same agent coming back (new chat window, restarted app).
@@ -806,6 +888,7 @@ const ACTIONS = {
     if (signal?.aborted) throw new RoomError('Wait cancelled by the app.', 499);
     // Deliver at most MAX_BATCH messages; the rest stay queued for the next wait.
     const batch = deliver.slice(0, MAX_BATCH);
+    this._markSeen(actor, batch);
     const queued = deliver.length - batch.length;
     const upTo = queued ? batch[batch.length - 1].seq : this.s.seq;
     const skippedNow = skipped.filter((m) => m.seq <= upTo);
@@ -856,6 +939,17 @@ const ACTIONS = {
       paused: this.s.paused,
       guidance: guidance(this, actor, lead, batch, tasks, queued, { timeoutMs }),
     };
+    // Extras ride along with real updates only, so they never wake anyone up on their own.
+    if (!result.quiet) {
+      if (actor.pendingReactions?.length) {
+        result.reactions = actor.pendingReactions.map((r) => `#${r.seq} ${r.emoji} ${this._nameOf(r.by)}`);
+        actor.pendingReactions = [];
+      }
+      // Who is doing what, when it changed: so nobody starts work someone else already has.
+      const teamNow = this.teamNow(actor);
+      if (teamNow && teamNow !== actor._teamNow) result.team_now = teamNow;
+      actor._teamNow = teamNow;
+    }
     this.account(actor, 0, 0, skippedNow.reduce((n, m) => n + m.text.length + 60, 0));
     return result;
   },
@@ -868,12 +962,36 @@ const ACTIONS = {
       const id = this._resolveTarget(from);
       list = list.filter((m) => m.from === id);
     }
-    return { messages: list.slice(-Math.min(Number(limit) || 30, 200)).map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })) };
+    list = list.slice(-Math.min(Number(limit) || 30, 200));
+    this._markSeen(actor, list);
+    return { messages: list.map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })) };
+  },
+
+  /** React to a message instead of replying "ok": it wakes nobody and costs no one tokens. */
+  react(actor, { seq, emoji }) {
+    const m = this.s.messages.find((x) => x.seq === Number(seq));
+    if (!m || m.kind === 'system' || (actor.id !== HUMAN_ID && m.to !== null && m.to !== actor.id && m.from !== actor.id)) throw new RoomError(`No message #${seq} to react to.`, 404);
+    const e = String(emoji || '').trim();
+    if (!e || e.length > 8 || /[\p{L}\p{N}]/u.test(e)) throw new RoomError('emoji must be one emoji, e.g. 👍 ✅ 👀 ❤️ 🎉');
+    m.reactions ||= {};
+    const ids = (m.reactions[e] ||= []);
+    const removed = ids.includes(actor.id);
+    if (removed) ids.splice(ids.indexOf(actor.id), 1);
+    else ids.push(actor.id);
+    if (!ids.length) delete m.reactions[e];
+    // The author hears about it with its next real update (never woken just for a reaction).
+    const author = this.s.members[m.from];
+    if (!removed && author && author.id !== actor.id) {
+      author.pendingReactions = [...(author.pendingReactions || []), { seq: m.seq, emoji: e, by: actor.id }].slice(-20);
+    }
+    this._changed('message');
+    return { seq: m.seq, emoji: e, [removed ? 'removed' : 'added']: true };
   },
 
   read_message(actor, { seq }) {
     const m = this.s.messages.find((x) => x.seq === Number(seq));
     if (!m || (actor.id !== HUMAN_ID && m.to !== null && m.to !== actor.id && m.from !== actor.id)) throw new RoomError(`No message #${seq}.`, 404);
+    this._markSeen(actor, [m]);
     return { message: this._formatMessage(m, actor) };
   },
 
@@ -1013,8 +1131,23 @@ const ACTIONS = {
     t.owner = actor.id;
     t.status = 'in_progress';
     t.updatedAt = now();
-    this._system(`${this._nameOf(actor.id)} is working on ${t.id}: ${t.title}`, null, { quiet: true });
-    return { task: this._taskInfo(t) };
+    // The task's files are reserved for whoever does it, so nobody else edits them meanwhile.
+    const reserved = [];
+    const busy = [];
+    for (const f of t.files || []) {
+      const c = this.s.claims[f];
+      if (c && c.memberId !== actor.id) busy.push(`${f} (${this._nameOf(c.memberId)})`);
+      else if (actor.id !== HUMAN_ID) {
+        this.s.claims[f] = { memberId: actor.id, ts: now(), note: t.id, taskId: t.id };
+        reserved.push(f);
+      }
+    }
+    this._system(`${this._nameOf(actor.id)} is working on ${t.id}: ${t.title}${reserved.length ? ` (editing ${reserved.join(', ')})` : ''}`, null, { quiet: true });
+    return compact({
+      task: this._taskInfo(t),
+      reserved_files: reserved.length ? reserved : undefined,
+      warning: busy.length ? `Being edited by someone else, coordinate before touching: ${busy.join(', ')}` : undefined,
+    });
   },
 
   finish_task(actor, { task_id, result, status = 'done', attachments }) {
@@ -1028,7 +1161,7 @@ const ACTIONS = {
     t.attachments = toList(attachments).filter((id) => this.s.assets[id]);
     t.owner ||= actor.id;
     t.updatedAt = now();
-    for (const f of t.files || []) if (this.s.claims[f]?.memberId === actor.id) delete this.s.claims[f];
+    for (const f of t.files || []) if (this.s.claims[f] && (this.s.claims[f].memberId === actor.id || this.s.claims[f].taskId === t.id)) delete this.s.claims[f];
     this._addMessage({
       from: actor.id, to: t.from === actor.id ? null : t.from, kind: 'result', taskId: t.id, attachments: t.attachments,
       text: `[${t.id} ${status}] ${t.title}${clean ? `\n${clean.text}` : ''}`,
@@ -1177,6 +1310,15 @@ const ACTIONS = {
    */
   remember(actor, { text, tags, private: priv = false, kind = 'fact' }) {
     if (!text || !String(text).trim()) throw new RoomError('Nothing to remember.');
+    // Keep memory tidy: the same fact again is not stored twice; a near-identical one replaces the old.
+    const clean = cleanText(text, 1000, 'Memory').text;
+    const twin = this._memoryTwin(actor, clean, priv && actor.id !== HUMAN_ID);
+    if (twin) {
+      if (twin.same) return { saved: twin.entry.id, note: 'Already remembered.' };
+      Object.assign(twin.entry, { text: clean, ts: now(), by: actor.id, tags: [...new Set([...(twin.entry.tags || []), ...toList(tags)])].slice(0, 8) });
+      this._changed('memory');
+      return { updated: twin.entry.id, note: 'Replaced a near-identical memory with this newer wording.' };
+    }
     const entry = {
       id: `M${(this.s.memory.length ? Number(this.s.memory[this.s.memory.length - 1].id.slice(1)) : 0) + 1}`,
       text: cleanText(text, 1000, 'Memory').text, tags: toList(tags).slice(0, 8), by: actor.id, ts: now(),
@@ -1188,6 +1330,42 @@ const ACTIONS = {
     if (entry.kind === 'decision' && !entry.private) this._system(`Decision by ${this._nameOf(actor.id)}: ${entry.text}`);
     else this._changed('memory');
     return { saved: entry.id, note: 'Recall it later with recall (search words), so nobody has to keep it in context.' };
+  },
+
+  /**
+   * Bring in a memory file (e.g. the lead's notes about the project): one memory per bullet or
+   * line; "# Headings" become tags. Duplicates are merged.
+   */
+  import_memory(actor, { text, tags, kind = 'fact' }) {
+    const raw = String(text || '').replace(/^---\n[\s\S]*?\n---\n/, '');
+    if (!raw.trim()) throw new RoomError('Nothing to import: pass the text of the memory file.');
+    if (raw.length > 200_000) throw new RoomError('That is more than 200,000 characters; import it in parts.');
+    let heading = '';
+    const counts = { added: 0, merged: 0, skipped: 0 };
+    for (const line of raw.split(/\r?\n/)) {
+      const h = line.match(/^#{1,6}\s+(.+)/);
+      if (h) { heading = h[1].toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 30); continue; }
+      const item = line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').trim();
+      if (item.split(/\s+/).length < 3 || /^```/.test(item)) { if (item) counts.skipped++; continue; }
+      if (counts.added + counts.merged >= 300) { counts.skipped++; continue; }
+      const r = ACTIONS.remember.call(this, actor, { text: item.slice(0, 1000), kind, tags: [...toList(tags), 'imported', ...(heading ? [heading] : [])] });
+      if (r.updated || r.note === 'Already remembered.') counts.merged++;
+      else counts.added++;
+    }
+    this._system(`🧠 ${this._nameOf(actor.id)} added ${counts.added} memories to the room${counts.merged ? ` (${counts.merged} already known)` : ''}. Find them with recall.`, null, { quiet: true });
+    return counts;
+  },
+
+  edit_memory(actor, { id, text, kind, tags }) {
+    const e = this.s.memory.find((x) => x.id === String(id || '').toUpperCase());
+    if (!e || (e.private && e.by !== actor.id)) throw new RoomError(`No memory ${id}.`, 404);
+    if (e.by !== actor.id && actor.id !== HUMAN_ID && actor.id !== this.s.leadId) throw new RoomError('Only its author, the lead or the human can change it.', 403);
+    if (text !== undefined) e.text = cleanText(text, 1000, 'Memory').text;
+    if (kind && ['fact', 'decision', 'preference', 'todo', 'lesson'].includes(kind)) e.kind = kind;
+    if (tags !== undefined) e.tags = toList(tags).slice(0, 8);
+    e.ts = now();
+    this._changed('memory');
+    return { updated: e.id };
   },
 
   recall(actor, { query, limit = 5, tags } = {}) {
@@ -1222,9 +1400,28 @@ const ACTIONS = {
     return { removed: m.name };
   },
 
-  update_settings(actor, { commands, leadAwayMinutes, readUsage }) {
+  update_settings(actor, { commands, leadAwayMinutes, readUsage, humanName, rules, knowledge }) {
     if (actor.id !== HUMAN_ID) throw new RoomError('Only the human can change room settings.', 403);
-    if (commands !== undefined) {
+    if (humanName !== undefined) {
+      const name = String(humanName || '').trim().replace(/^@/, '').replace(/\s+/g, ' ').slice(0, 32);
+      if (name && this.memberByName(name)) throw new RoomError(`An AI in the room is already called "${name}".`);
+      if (name !== (this.s.settings.humanName || '')) {
+        this.s.settings.humanName = name;
+        this._system(`The human is called ${name || 'Human'}. Address them as @${(name || 'human').replace(/\s+/g, '')}.`);
+      }
+    }
+    if (knowledge !== undefined) this._setKnowledge(knowledge);
+    if (rules !== undefined) {
+      const before = Object.fromEntries(Object.values(this.s.members).map((m) => [m.id, this._rulesFor(m).join('\n')]));
+      this.s.settings.rules = cleanText(String(rules || ''), 4000, 'Rules').text;
+      // Tell each AI about the rules that changed for it, so it applies them right away.
+      for (const m of Object.values(this.s.members)) {
+        const now_ = this._rulesFor(m);
+        if (now_.join('\n') === before[m.id]) continue;
+        this._addMessage({ from: 'system', to: m.id, kind: 'system', text: now_.length ? `📋 ${this._nameOf(HUMAN_ID)} updated the room rules. Follow these from now on:\n${now_.map((r) => `- ${r}`).join('\n')}` : `📋 ${this._nameOf(HUMAN_ID)} cleared the room rules.` });
+      }
+    }
+    if (commands !== undefined && commands !== this.s.settings.commands) {
       if (!['off', 'ask', 'auto'].includes(commands)) throw new RoomError('commands must be off, ask or auto.');
       this.s.settings.commands = commands;
       this._system(`Commands for members: ${{ off: 'not allowed', ask: 'allowed after the human approves each one', auto: 'allowed without approval' }[commands]}.`);
@@ -1233,6 +1430,14 @@ const ACTIONS = {
     if (readUsage !== undefined) this.s.settings.readUsage = !!readUsage;
     this._changed('settings');
     return { settings: this.s.settings };
+  },
+
+  /** Lead: point everyone at project knowledge files (CLAUDE.md, docs, memory exports). */
+  set_knowledge(actor, { files }) {
+    this._leadOrHuman(actor);
+    this._setKnowledge(files);
+    this._changed('settings');
+    return { knowledge: this.s.settings.knowledge };
   },
 
   // ----- project files (mainly for chat apps that cannot see the disk) -----
@@ -1453,7 +1658,8 @@ export const RULES = [
   'You keep all your own tools, memory and knowledge. Use them freely; the room is for teamwork.',
   'Work in a loop: wait for updates -> act -> report -> wait again. Keep going while there is work; do not stop after one reply.',
   'The lead plans and assigns work. Members do their tasks, review each other, and suggest ideas. Anyone can ask anyone for help, especially for things only they can do (images, web search, running code, a second opinion).',
-  'Before editing a project file, claim it. Release it when done. Never edit a file someone else is editing.',
+  'Before editing a project file, claim it (taking a task reserves its files for you). Release it when done. Never edit a file someone else is editing, and check "team now" so you never redo work someone already has.',
+  'To acknowledge a message, react with an emoji (send_message with react_to) instead of replying "ok" or "thanks": it costs nobody tokens.',
   'When you finish a task, report it with finish_task and a clear result, so the asker gets it.',
   'If the lead is away, finish the tasks you already have, report the results, then keep waiting until the lead is back. Do not start big new work alone.',
   'If the room is paused, finish your current step, then just wait.',

@@ -37,7 +37,19 @@ export function createMcpServer(ctx) {
   );
 
   const who = () => {
-    const found = ctx.token && hub.findMember(ctx.token);
+    let found = ctx.token && hub.findMember(ctx.token);
+    // The app restarted its connection (new process, hub update, expired session): if exactly
+    // one member came from this app, it is this one coming back, so carry on without a rejoin.
+    if (!found && !ctx.token) {
+      const app = server.server.getClientVersion?.()?.name;
+      const rooms = ctx.roomCode ? [hub.room(ctx.roomCode)].filter(Boolean) : hub.listRooms();
+      const matches = app ? rooms.flatMap((room) => Object.values(room.s.members).filter((m) => m.client?.name === app).map((member) => ({ room, member }))) : [];
+      if (matches.length === 1) {
+        found = matches[0];
+        ctx.token = found.member.token;
+        ctx.resumed = `(Reconnected you as ${found.member.name} in room "${found.room.s.name}".) `;
+      }
+    }
     if (!found) throw new RoomError('Not joined (or the connection was reset). Call join_room again; pass your token to come back as the same member.', 401);
     return found;
   };
@@ -52,6 +64,10 @@ export function createMcpServer(ctx) {
       const [name, mapped] = typeof action === 'function' ? action(args) : [action, mapArgs(args, extra)];
       const result = await room.call(name, member, mapped);
       const out = text(format ? format(result) : result);
+      if (ctx.resumed) {
+        out.content[0].text = ctx.resumed + out.content[0].text;
+        ctx.resumed = null;
+      }
       room.account(member, JSON.stringify(args).length, out.content[0].text.length);
       return out;
     } catch (err) {
@@ -136,10 +152,10 @@ export function createMcpServer(ctx) {
 
   tool(
     'send_message',
-    'Post to everyone, or to one member with "to" (name, "lead" or "human"). @Name gets someone\'s attention; @everyone reaches all.',
-    { text: z.string(), to: z.string().optional(), attachments: z.array(z.string()).optional().describe('Shared file ids.') },
+    'Post to everyone, or to one member with "to" (name, "lead" or "human"). @Name gets someone\'s attention; @everyone reaches all. react_to: react to message #seq with an emoji in text instead of replying "ok" (wakes nobody).',
+    { text: z.string(), to: z.string().optional(), attachments: z.array(z.string()).optional().describe('Shared file ids.'), react_to: z.number().optional() },
     WRITE,
-    act('send'),
+    act((a) => (a.react_to ? ['react', { seq: a.react_to, emoji: a.text }] : ['send', a])),
   );
 
   tool(
@@ -206,9 +222,9 @@ export function createMcpServer(ctx) {
 
   tool(
     'memory',
-    'Room memory that saves tokens. remember: store a short fact, decision, preference or lesson (private: only you can recall it). recall: search with a few words, returns only the best matches. forget: remove by id.',
+    'Room memory that saves tokens. remember: store a short fact, decision, preference or lesson (private: only you can recall it; duplicates merge). recall: search with a few words, returns only the best matches. forget / edit: by id. import: add a whole memory file (text; one memory per bullet, # headings become tags), e.g. your notes about the project, so teammates can recall them.',
     {
-      action: z.enum(['remember', 'recall', 'forget']),
+      action: z.enum(['remember', 'recall', 'forget', 'edit', 'import']),
       text: z.string().optional(),
       query: z.string().optional(),
       tags: z.array(z.string()).optional(),
@@ -220,19 +236,23 @@ export function createMcpServer(ctx) {
     WRITE,
     act((a) => (a.action === 'recall'
       ? ['recall', { query: a.query ?? a.text, tags: a.tags, limit: a.limit }]
-      : a.action === 'forget' ? ['forget', { id: a.id }] : ['remember', { text: a.text, tags: a.tags, kind: a.kind, private: a.private }])),
+      : a.action === 'forget' ? ['forget', { id: a.id }]
+        : a.action === 'edit' ? ['edit_memory', { id: a.id, text: a.text, kind: a.kind, tags: a.tags }]
+          : a.action === 'import' ? ['import_memory', { text: a.text, tags: a.tags, kind: a.kind }]
+            : ['remember', { text: a.text, tags: a.tags, kind: a.kind, private: a.private }])),
   );
   tool('set_summary', 'Room summary (goal, decisions, who does what, what is left). Newcomers read it instead of the chat. Lead: refresh it when the chat gets long.', { text: z.string() }, WRITE, act('set_summary'));
 
   tool(
     'lead_action',
-    'Lead only. new_chapter: archive the chat and start fresh (value = summary); everyone keeps summary, memory and tasks and can continue in a cheaper fresh conversation. pause / resume: one member (name) or the whole team. stop: pause a member, free its files, reopen its tasks. lead: hand over the lead (name). brief: set the brief (value). focus: a member\'s focus (name, value focus|all).',
-    { action: z.enum(['new_chapter', 'pause', 'resume', 'stop', 'lead', 'brief', 'focus']), name: z.string().optional(), value: z.string().optional() },
+    'Lead only. knowledge: files everyone should read first (value = comma-separated project paths, e.g. CLAUDE.md). new_chapter: archive the chat and start fresh (value = summary); everyone keeps summary, memory and tasks and can continue in a cheaper fresh conversation. pause / resume: one member (name) or the whole team. stop: pause a member, free its files, reopen its tasks. lead: hand over the lead (name). brief: set the brief (value). focus: a member\'s focus (name, value focus|all).',
+    { action: z.enum(['new_chapter', 'knowledge', 'pause', 'resume', 'stop', 'lead', 'brief', 'focus']), name: z.string().optional(), value: z.string().optional() },
     WRITE,
     act((a) => {
       if (['pause', 'resume', 'stop'].includes(a.action) && a.name) return ['control_member', { name: a.name, action: a.action, reason: a.value }];
       if (a.action === 'stop') throw new RoomError('stop needs the member name.');
       if (a.action === 'new_chapter') return ['new_chapter', { summary: a.value }];
+      if (a.action === 'knowledge') return ['set_knowledge', { files: a.value }];
       return {
         brief: ['set_brief', { brief: a.value }],
         lead: ['set_lead', { name: a.name || a.value }],

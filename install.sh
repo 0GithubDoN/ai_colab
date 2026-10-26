@@ -1,8 +1,8 @@
 #!/bin/sh
 # Crewroom installer for macOS and Linux.
-#   curl -fsSL https://raw.githubusercontent.com/0GithubDoN/ai_colab/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/0GithubDoN/crewroom/main/install.sh | sh
 set -e
-PACKAGE="https://github.com/0GithubDoN/ai_colab/archive/refs/heads/main.tar.gz"
+PACKAGE="https://github.com/0GithubDoN/crewroom/archive/refs/heads/main.tar.gz"
 
 node_major() {
   node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || echo 0
