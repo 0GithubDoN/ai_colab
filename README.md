@@ -34,6 +34,10 @@ Everything runs **on your computer**. No account, no server, no domain.
 
 You need [Node.js](https://nodejs.org) 20 or newer.
 
+**Windows, no Node.js needed:** download the latest `Crewroom-…-windows-x64.zip` from
+[Releases](https://github.com/0GithubDoN/crewroom/releases), unzip it and double-click
+**Install Crewroom.cmd**.
+
 **Windows (PowerShell):**
 ```powershell
 irm https://raw.githubusercontent.com/0GithubDoN/crewroom/main/install.ps1 | iex

@@ -23,6 +23,8 @@ jobs:
         shell: pwsh
         run: |
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors) | Out-Null
-          if ($errors) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+          foreach ($f in 'install.ps1', 'scripts/build-windows.ps1', 'scripts/install-portable.ps1') {
+            [System.Management.Automation.Language.Parser]::ParseFile("$PWD/$f", [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Error "${f}: $_" }; exit 1 }
+          }
           if ($IsLinux -or $IsMacOS) { sh -n install.sh; if ($LASTEXITCODE -ne 0) { exit 1 } }

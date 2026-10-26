@@ -245,6 +245,62 @@
     .tab { overflow: visible; }
     header .hide-sm { display: none; }
   }
+
+  /* ---------- polish layer: calmer surfaces, soft depth, consistent radii ---------- */
+  :root { --bg: #f5f6f8; --line: #e6e8ec; --line-2: #eef0f3; --radius: 12px; --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .04); --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0e1115; --panel: #151a20; --panel-2: #1a2027; --line: #262d36; --line-2: #1f252d; --shadow-sm: 0 1px 2px rgba(0, 0, 0, .35); } }
+  body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
+  button { border-radius: 9px; transition: background .12s, border-color .12s, box-shadow .12s, color .12s; }
+  button:not(.primary):not(.ghost):not(.chip) { background: var(--panel); }
+  button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--ring); border-color: var(--accent); }
+  button.primary:hover { filter: brightness(1.06); }
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--faint) 45%, transparent) transparent; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; } ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--faint) 40%, transparent); border-radius: 9px; border: 2px solid transparent; background-clip: padding-box; }
+
+  header { position: sticky; top: 0; z-index: 4; padding: 10px 18px; background: color-mix(in srgb, var(--panel) 86%, transparent); backdrop-filter: saturate(1.4) blur(10px); }
+  .brand { font-size: 16px; letter-spacing: -.01em; }
+  .logo { width: 30px; height: 30px; border-radius: 9px; box-shadow: 0 4px 12px color-mix(in srgb, #3b6fd8 35%, transparent); }
+  .pill { background: var(--panel); border-color: var(--line); }
+
+  aside.left { background: var(--bg); padding: 14px; }
+  aside.right { background: var(--panel); }
+  h3 { font-size: 10.5px; letter-spacing: .09em; color: var(--faint); }
+  .member { border-color: var(--line-2); box-shadow: var(--shadow-sm); padding: 12px; transition: box-shadow .15s, border-color .15s; }
+  .member:hover { box-shadow: 0 4px 14px rgba(16, 24, 40, .08); }
+  .member.working { border-color: color-mix(in srgb, var(--accent) 35%, var(--line-2)); box-shadow: var(--shadow-sm), inset 3px 0 0 var(--accent); }
+  .stats { background: var(--panel); border-color: var(--line-2); box-shadow: var(--shadow-sm); }
+
+  .chatpane { background: var(--bg); }
+  .filters { background: color-mix(in srgb, var(--panel) 70%, var(--bg)); padding: 9px 18px; }
+  .chip { border-color: transparent; background: transparent; color: var(--muted); font-weight: 550; }
+  .chip:hover { background: var(--panel); border-color: var(--line); }
+  #feed { padding: 14px 22px 8px; }
+  .msg { max-width: 860px; }
+  .msg .body { border-radius: 4px 14px 14px 14px; box-shadow: var(--shadow-sm); padding: 8px 12px; }
+  .msg.human .body { border-radius: 14px 4px 14px 14px; }
+  .notice { margin-left: 42px; }
+  .notice.important { background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px; padding: 6px 10px; width: fit-content; max-width: 860px; box-shadow: var(--shadow-sm); }
+  .notice.important::before { align-self: center; }
+  details.updates { margin-left: 42px; }
+
+  form.composer { margin: 0 16px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: 0 6px 22px rgba(16, 24, 40, .08); padding: 8px; }
+  form.composer textarea { border: 0; background: transparent; }
+  form.composer textarea:focus { outline: none; box-shadow: none; }
+  form.composer select { border: 0; background: var(--panel-2); }
+  .working-strip { padding-left: 22px; }
+
+  .tabs { gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--line-2); }
+  .tabs button { border-radius: 8px; border: 0; padding: 6px 10px; }
+  .tabs button:hover { background: var(--panel-2); color: var(--text); }
+  .tabs button.on { background: var(--accent-soft); color: var(--accent); }
+  .card { border-color: var(--line-2); box-shadow: var(--shadow-sm); padding: 10px 12px; }
+  .st { border-radius: 999px; padding: 1px 8px; border-color: transparent; background: var(--panel-2); }
+  .st.done, .st.finished { background: color-mix(in srgb, var(--ok) 12%, var(--panel)); }
+  .st.assigned, .st.in_progress, .st.pending, .st.running { background: color-mix(in srgb, var(--warn) 12%, var(--panel)); }
+  .st.checking, .st.open { background: var(--accent-soft); }
+  .st.blocked, .st.denied { background: color-mix(in srgb, var(--bad) 10%, var(--panel)); }
+  .approvals { background: color-mix(in srgb, var(--warn) 6%, var(--panel)); }
+  dialog { border-radius: 16px; }
 </style>
 </head>
 <body>
@@ -570,6 +626,8 @@ function messageNode(m) {
   wrap.className = ['msg', m.kind, m.fromId === 'human' ? 'human' : 'ai', m.toId ? 'dm' : '', cont ? 'cont' : ''].join(' ');
   if (m.fromId !== 'human') wrap.style.setProperty('--ai', colorOf(m.from));
   // Long messages start folded so the chat stays readable; one click shows everything.
+  // The review hint is for the AIs; the dashboard has buttons for that.
+  m = { ...m, text: m.text.replace(/\n\(Review it: update_task review[^)]*\)$/, '') };
   const long = m.text.length > 700 || m.text.split('\n').length > 12;
   const att = (m.attachments || []).map((a) => a.mime.startsWith('image/') ? `<a href="${a.url}" target="_blank" rel="noopener"><img src="${a.url}" alt="${esc(a.name)}"></a>` : `<a href="${a.url}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join('');
   wrap.innerHTML = `${avatar(from)}<div class="col">
@@ -608,7 +666,7 @@ function memberCard(m) {
   const doing = m.activity || (m.status === 'working' ? m.lastAction : m.status === 'listening' ? 'waiting for messages' : '');
   return `<div class="member ${m.status} ${m.paused ? 'is-paused' : ''} ${openMembers.has(m.name) ? 'open' : ''}" data-member="${esc(m.name)}">
     <div class="top">${avatar(m.name, m.status)}
-      <div style="min-width:0;flex:1"><div class="name" style="color:${colorOf(m.name)}">${esc(m.name)}${m.role === 'lead' ? '<span class="badge">lead</span>' : ''}${m.rank && (m.rank.manual || (m.rank.done && m.role !== 'lead')) ? `<span class="rank ${m.rank.title}" title="${esc(rankTip(m.rank))}">${m.rank.title}</span>` : ''}${m.paused ? `<span class="badge paused" title="${esc(`by ${m.paused.by}${m.paused.reason ? `: ${m.paused.reason}` : ''}`)}">${m.paused.stopped ? 'stopped' : 'paused'}</span>` : ''}</div>
+      <div style="min-width:0;flex:1"><div class="name" style="color:${colorOf(m.name)}">${esc(m.name)}${m.role === 'lead' ? '<span class="badge">lead</span>' : ''}${m.rank && (m.rank.manual || (m.rank.title !== 'New' && m.role !== 'lead')) ? `<span class="rank ${m.rank.title}" title="${esc(rankTip(m.rank))}">${m.rank.title}</span>` : ''}${m.paused ? `<span class="badge paused" title="${esc(`by ${m.paused.by}${m.paused.reason ? `: ${m.paused.reason}` : ''}`)}">${m.paused.stopped ? 'stopped' : 'paused'}</span>` : ''}</div>
       <div class="state ${m.status}">${STATE_LABEL[m.status] || m.status}${m.status === 'working' ? ' <span class="typing"><i></i><i></i><i></i></span>' : ''}${['idle', 'offline', 'away'].includes(m.status) ? ` · last contact ${ago(m.lastSeen)}` : ''} · ${esc(m.app)}</div></div>
       ${m.unread && m.status !== 'listening' && m.status !== 'working' ? `<span class="unread" title="Messages are waiting for ${esc(m.name)}. If its app can't wake itself, nudge it there (e.g. “check the room”).">${m.unread} unread</span>` : ''}
       <button class="ghost small" data-toggle="${esc(m.name)}" title="Details">${openMembers.has(m.name) ? '▴' : '▾'}</button>

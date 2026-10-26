@@ -652,13 +652,18 @@ test('reviews: approve with stars or send back; ranks follow the track record an
   await room.call('review_task', claude, { task_id: t1, verdict: 'approve', rating: 5 });
   for (const n of ['Two', 'Three', 'Four', 'Five']) await room.call('review_task', claude, { task_id: await finish(gpt, n), verdict: 'approve', rating: 5 });
   assert.equal(room._rankOf(gpt).title, 'Senior');
-  assert.equal(room._rankOf(gemini).title, 'Trainee');
+  assert.equal(room._rankOf(gemini).title, 'New');
   await room.call('set_rank', claude, { name: 'Gemini', rank: 'mid' });
   assert.deepEqual([room._rankOf(gemini).title, room._rankOf(gemini).manual], ['Mid', true]);
   // auto routing: hard work goes to the senior, easy work to the lower rank.
   assert.equal((await room.call('ask', claude, { to: 'auto', title: 'Hard one', difficulty: 'hard' })).task.assigned_to, 'ChatGPT');
   const easy = await room.call('ask', claude, { to: 'auto', title: 'Easy one', difficulty: 'easy' });
   assert.equal(easy.task.assigned_to, 'Gemini');
+  // A thin task for a junior: the lead is told to spell it out.
+  await room.call('set_rank', claude, { name: 'Gemini', rank: 'junior' });
+  const thin = await room.call('ask', claude, { to: 'Gemini', title: 'Fix the footer' });
+  assert.match(thin.coaching, /Gemini is Junior: give step-by-step instructions/);
+  assert.match(room.s.messages.at(-1).text, /ask before guessing/);
   // The ledger remembers who did what.
   const log = await room.call('team_log', claude, { about: 'ChatGPT' });
   assert.ok(log.entries.some((e) => /ChatGPT: finished T\d+: One/.test(e)));
