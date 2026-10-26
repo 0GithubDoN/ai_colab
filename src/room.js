@@ -229,7 +229,8 @@ export class Room extends EventEmitter {
     const good = passed + approved + ratings.filter((r) => r >= 4).length;
     const bad = failed + changes + ratings.filter((r) => r <= 2).length;
     const quality = (good + 1) / (good + bad + 2);
-    const auto = done < 2 ? 'Trainee' : quality >= 0.8 && done >= 5 ? 'Senior' : quality >= 0.6 ? 'Mid' : 'Junior';
+    // New members have no track record yet: "New" is not a judgement, it just means unknown.
+    const auto = done < 2 ? 'New' : quality >= 0.8 && done >= 5 ? 'Senior' : quality >= 0.6 ? 'Mid' : quality >= 0.4 ? 'Junior' : 'Trainee';
     return compact({
       title: m.rankOverride || auto, manual: m.rankOverride ? true : undefined, quality: Math.round(quality * 100),
       done, passed, failed, rework: changes || undefined, rating: ratings.length ? Math.round((ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10) / 10 : undefined,
@@ -909,7 +910,7 @@ export class Room extends EventEmitter {
     });
     if (!candidates.length) throw new RoomError(want ? `Nobody available can do "${want}". Members: ${Object.values(this.s.members).map((m) => `${m.name} (${(m.capabilities || []).join(', ') || 'no capabilities listed'})`).join('; ')}` : 'Nobody else is available right now.', 409);
     // Hard work goes to proven members; easy work to juniors (often cheaper models).
-    const level = (m) => ({ Senior: 3, Mid: 2, Junior: 1, Trainee: 0 })[this._rankOf(m).title];
+    const level = (m) => ({ Senior: 3, Mid: 2, New: 1.5, Junior: 1, Trainee: 0 })[this._rankOf(m).title];
     let pool = candidates;
     if (difficulty === 'hard' && candidates.some((m) => level(m) >= 2)) pool = candidates.filter((m) => level(m) >= 2);
     const score = (m) => {
@@ -1297,7 +1298,7 @@ const ACTIONS = {
       const who = target ? this._nameOf(target) : 'anyone';
       this._addMessage({
         from: actor.id, to: target, kind: 'task', taskId: t.id,
-        text: `[${t.id} · ${t.kind} for ${who}] ${t.title}${t.details ? `\n${t.details}` : ''}${t.files.length ? `\nFiles: ${t.files.join(', ')}` : ''}${t.doneWhen ? `\nDone when: ${t.doneWhen}` : ''}${t.check ? `\nCheck: \`${this.s.toolbox?.[t.check]?.command || t.check}\` runs automatically when you finish.` : ''}`,
+        text: `[${t.id} · ${t.kind} for ${who}] ${t.title}${t.details ? `\n${t.details}` : ''}${t.files.length ? `\nFiles: ${t.files.join(', ')}` : ''}${t.doneWhen ? `\nDone when: ${t.doneWhen}` : ''}${t.check ? `\nCheck: \`${this.s.toolbox?.[t.check]?.command || t.check}\` runs automatically when you finish.` : ''}${target && ['Junior', 'Trainee'].includes(this._rankOf(this.s.members[target] || {}).title) ? '\nFollow the steps exactly, change only the files listed, and ask before guessing.' : ''}`,
       });
       this._log('task.created', actor.id, `asked ${who}: ${t.title}`, { task: t.id, files: t.files });
       return t;
@@ -1305,11 +1306,16 @@ const ACTIONS = {
     const wait = Number(wait_seconds) || 0;
     if (wait > 0) await Promise.all(created.map((t) => this._awaitTask(t, wait)));
     const infos = created.map((t) => this._taskInfo(t));
+    // Lower ranks need the work spelled out: tell the lead when a task to one of them is thin.
+    const coaching = created.filter((t) => t.to && ['Junior', 'Trainee'].includes(this._rankOf(this.s.members[t.to] || {}).title) && (!t.doneWhen || !t.check || (t.details || '').length < 200 || !t.files.length))
+      .map((t) => `${this._nameOf(t.to)} is ${this._rankOf(this.s.members[t.to]).title}: give step-by-step instructions (details), the exact files, done_when and a check, and review the result closely.`);
     const pending = created.filter((t) => !['done', 'blocked', 'cancelled'].includes(t.status)).length;
     const note = wait > 0
       ? (pending ? `${pending} not finished yet; the result will arrive as a message (or call wait_task).` : 'Finished: the result is above.')
       : created[0].to ? `Sent to ${created.map((t) => this._nameOf(t.to)).join(', ')}. Results come back to you as messages.` : 'Posted as an open task; any member can take it.';
-    return created.length === 1 ? { task: infos[0], note } : { tasks: infos, note };
+    const out = created.length === 1 ? { task: infos[0], note } : { tasks: infos, note };
+    if (coaching.length) out.coaching = coaching.join(' ');
+    return out;
   },
 
   async wait_task(_actor, { task_id, wait_seconds = 45 }) {
@@ -1423,7 +1429,7 @@ const ACTIONS = {
     this._leadOrHuman(actor, true);
     const m = this.memberByName(name);
     if (!m) throw new RoomError(`No member named "${name}".`);
-    const titles = { senior: 'Senior', mid: 'Mid', junior: 'Junior', trainee: 'Trainee' };
+    const titles = { senior: 'Senior', mid: 'Mid', junior: 'Junior', trainee: 'Trainee', new: 'New' };
     const key = String(rank || '').toLowerCase();
     if (key !== 'auto' && !titles[key]) throw new RoomError('rank must be senior, mid, junior, trainee or auto.');
     m.rankOverride = key === 'auto' ? undefined : titles[key];
@@ -1968,7 +1974,7 @@ const ACTIONS = {
 export const RULES = [
   'You keep all your own tools, memory and knowledge. Use them freely; the room is for teamwork.',
   'Work in a loop: wait for updates -> act -> report -> wait again. Keep going while there is work.',
-  'The lead plans, splits work into small tasks (with "done when" and a check) and reviews results. Members do their tasks and review each other. Ask anyone for what only they can do (images, web search, running code, a second opinion).',
+  'The lead plans, splits work into small tasks (with "done when" and a check) and reviews results; the lower a member\'s rank, the more detailed the instructions. Members do their tasks and review each other. Ask anyone for what only they can do (images, web search, running code, a second opinion).',
   'Unclear task? Ask the asker before guessing. Check "team now" and claims so you never redo or overwrite someone else\'s work; taking a task reserves its files.',
   'Before saying done, verify (run the task\'s check or the tests) and say how you verified. Report with update_task done and a clear result.',
   'Share what you learn: memory remember for facts teammates need, toolbox add for useful commands.',
