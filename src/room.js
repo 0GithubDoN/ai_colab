@@ -243,8 +243,12 @@ export class Room extends EventEmitter {
     if (!m) return;
     const r = this._rankOf(m).title;
     if (m.lastRank && m.lastRank !== r) {
+      const order = ['Trainee', 'Junior', 'New', 'Mid', 'Senior'];
+      const up = order.indexOf(r) > order.indexOf(m.lastRank);
       this._system(`🏅 ${m.name} is now ${r}.`, null, { quiet: true });
       this._log('rank', m.id, `${m.name}: ${m.lastRank} → ${r}`);
+      const rk = this._rankOf(m);
+      m.pendingNotes = [...(m.pendingNotes || []), `🏅 Your rank is now ${r} (was ${m.lastRank}): ${rk.done} done, ${rk.quality}% quality${rk.failed ? `, ${rk.failed} failed check(s)` : ''}${rk.rework ? `, ${rk.rework} sent back` : ''}. ${up ? 'Keep it up.' : 'Verify your work before saying done and follow instructions exactly to climb back.'}`].slice(-5);
     }
     m.lastRank = r;
   }
@@ -817,6 +821,7 @@ export class Room extends EventEmitter {
       project_knowledge: this.s.settings.knowledge?.length ? `Read these first for project knowledge (with your own tools or read_file): ${this.s.settings.knowledge.join(', ')}` : undefined,
       your_token: member.token,
       role: member.id === this.s.leadId ? 'lead' : 'member',
+      your_rank: member.id === this.s.leadId ? undefined : `${this._rankOf(member).title}. Everyone is ranked by results: checks passed, approvals and good ratings raise your rank; failed checks, work sent back and low ratings lower it. Lower ranks get more detailed instructions and closer review.`,
       lead: this.leadStatus(),
       brief: this.s.brief || '(no brief yet)',
       project_folder: this.projectRoot,
@@ -1008,6 +1013,7 @@ const ACTIONS = {
       project_folder: snap.projectRoot,
       paused: snap.paused,
       you: actor.name,
+      your_rank: actor.id === HUMAN_ID ? undefined : this._rankOf(actor),
       lead: snap.lead,
       summary: snap.summary?.text,
       members: snap.members.map((m) => ({
@@ -1130,6 +1136,10 @@ const ACTIONS = {
     };
     // Extras ride along with real updates only, so they never wake anyone up on their own.
     if (!result.quiet) {
+      if (actor.pendingNotes?.length) {
+        result.notes = actor.pendingNotes;
+        actor.pendingNotes = [];
+      }
       if (actor.pendingReactions?.length) {
         result.reactions = actor.pendingReactions.map((r) => `#${r.seq} ${r.emoji} ${this._nameOf(r.by)}`);
         actor.pendingReactions = [];
@@ -1976,7 +1986,8 @@ export const RULES = [
   'Work in a loop: wait for updates -> act -> report -> wait again. Keep going while there is work.',
   'The lead plans, splits work into small tasks (with "done when" and a check) and reviews results; the lower a member\'s rank, the more detailed the instructions. Members do their tasks and review each other. Ask anyone for what only they can do (images, web search, running code, a second opinion).',
   'Unclear task? Ask the asker before guessing. Check "team now" and claims so you never redo or overwrite someone else\'s work; taking a task reserves its files.',
-  'Before saying done, verify (run the task\'s check or the tests) and say how you verified. Report with update_task done and a clear result.',
+  'Be strictly honest: never invent facts, files, APIs or results; say "I don\'t know" or "I didn\'t verify" when that is the truth. Do not agree to be nice: if a plan, review or claim is wrong, say so plainly and why. Reviews must be real.',
+  'Before saying done, verify (run the task\'s check or the tests) and say how you verified. Report with update_task done and a clear result. You are ranked by your results (checks, reviews, ratings), up or down.',
   'Share what you learn: memory remember for facts teammates need, toolbox add for useful commands.',
   'React with an emoji (send_message react_to) instead of replying "ok": it costs nobody tokens. Keep messages short.',
   'When your conversation gets long or your app warns about context: save a checkpoint (update_me), then ask the human to /compact or open a fresh chat; rejoin with your token.',
