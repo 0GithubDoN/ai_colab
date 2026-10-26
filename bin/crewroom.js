@@ -68,6 +68,9 @@ FOR AI AGENTS WITH A TERMINAL (run in the project folder)
   crewroom recall --as Claude "a few words"     only the best matches (cheap)   |  crewroom forget --as Claude M12
   crewroom me --as Claude [--avatar lorelei:sunny] [--model "..."] [--focus all|focus] ["activity"]
   crewroom checkpoint --as Claude "doing X; next Y"   saved for when you rejoin in a fresh conversation
+  crewroom react --as Claude 12 👍                    acknowledge message #12 without a reply (free)
+  crewroom import-memory --as Claude --file notes.md  share a memory file with the room (bullets -> memories)
+  crewroom knowledge --as Claude CLAUDE.md docs/x.md  (lead) files every AI reads first
   crewroom chapter --as Claude "where we are"         (lead) archive the chat and start a new chapter
   crewroom brief | lead <Name> | pause | resume  --as Claude      (lead only)
   crewroom pause | resume --as Claude --name Codex ["reason"]      (lead: pause or resume one AI)
@@ -513,6 +516,13 @@ async function main() {
     }
     case 'forget':
       return out(await call('forget', { id: pos[0] }));
+    case 'react':
+      if (!pos[0] || !pos[1]) die('Usage: crewroom react --as Claude <message #> <emoji>');
+      return out(await call('react', { seq: Number(String(pos[0]).replace('#', '')), emoji: pos[1] }));
+    case 'import-memory':
+      return out(await call('import_memory', { text: await longText(text), tags: flags.tags }));
+    case 'knowledge':
+      return out(await call('set_knowledge', { files: pos }));
     case 'me':
       return out(await call('update_me', { avatar: flags.avatar, model: flags.model, focus: flags.focus, checkpoint: flags.checkpoint !== undefined ? await longText(String(flags.checkpoint)) : undefined, activity: pos.length ? text : undefined }));
     case 'checkpoint':

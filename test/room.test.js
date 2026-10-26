@@ -500,3 +500,83 @@ test('seen: a message counts as seen only once it was delivered to that AI', asy
   assert.deepEqual(seenOf('@Gemini please make the icon'), ['Gemini']);
   assert.equal((await room.call('read_message', gpt, { seq: room.s.seq })).message.seenBy, undefined);
 });
+
+test('the human has a name; room rules reach every AI, and @Name lines only that AI', async () => {
+  const { room, members: [claude, gpt, gemini] } = await setup('Claude', 'ChatGPT', 'Gemini');
+  await room.call('update_settings', HUMAN, { humanName: 'Lucian', rules: 'Never push to main.\n- @Gemini images are 1024px PNG\n@lead review every change' });
+  assert.equal(room._nameOf('human'), 'Lucian');
+  await assert.rejects(room.call('join', null, { name: 'Lucian' }), /reserved/);
+  await room.call('send', gpt, { text: 'question for you', to: 'Lucian' });
+  assert.equal(room.s.messages.at(-1).to, 'human');
+  const forGemini = await room.call('wait', gemini, { timeout_seconds: 0 });
+  const rulesMsg = forGemini.new_messages.find((m) => /updated the room rules/.test(m.text));
+  assert.match(rulesMsg.text, /Never push to main\.\n- images are 1024px PNG|Never push to main\.\n- @Gemini images are 1024px PNG/);
+  assert.doesNotMatch(rulesMsg.text, /review every change/);
+  assert.deepEqual(room._rulesFor(claude), ['Never push to main.', '@lead review every change']);
+  assert.deepEqual(room._rulesFor(gpt), ['Never push to main.']);
+  const back = await room.call('join', null, { token: gemini.token });
+  assert.deepEqual(back.room_rules, ['Never push to main.', '@Gemini images are 1024px PNG']);
+  assert.match(back.human, /^Lucian/);
+});
+
+test('reactions: free acknowledgements that ride along with the next real update', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  await room.call('send', claude, { text: '@ChatGPT please review app.js' });
+  const seq = room.s.seq;
+  await room.call('react', gpt, { seq, emoji: '👍' });
+  await assert.rejects(room.call('react', gpt, { seq, emoji: 'ok' }), /one emoji/);
+  assert.deepEqual(room.dashboardMessages().find((m) => m.seq === seq).reactions, { '👍': ['ChatGPT'] });
+  // Claude is not woken for a reaction...
+  const quiet = await room.call('wait', claude, { timeout_seconds: 0 });
+  assert.equal(quiet.quiet, true);
+  assert.equal(quiet.reactions, undefined);
+  // ...it hears about it with its next real update.
+  await room.call('send', gpt, { text: '@Claude done' });
+  const r = await room.call('wait', claude, { timeout_seconds: 0 });
+  assert.deepEqual(r.reactions, [`#${seq} 👍 ChatGPT`]);
+  assert.match(formatWait(r), /reactions to your messages: #\d+ 👍 ChatGPT/);
+  await room.call('react', gpt, { seq, emoji: '👍' }); // again = undo
+  assert.equal(room.dashboardMessages().find((m) => m.seq === seq).reactions, undefined);
+});
+
+test('taking a task reserves its files; others see who does what; finishing frees them', async () => {
+  const { room, members: [claude, gpt, gemini] } = await setup('Claude', 'ChatGPT', 'Gemini');
+  const { task } = await room.call('ask', claude, { to: 'ChatGPT', title: 'Fix the parser', files: ['index.js'] });
+  const took = await room.call('take_task', gpt, { task_id: task.id });
+  assert.deepEqual(took.reserved_files, ['index.js']);
+  await assert.rejects(room.call('claim_file', gemini, { path: 'index.js' }), /being edited by ChatGPT/);
+  await room.call('send', claude, { text: '@Gemini what about the icon?' });
+  const r = await room.call('wait', gemini, { timeout_seconds: 0 });
+  assert.match(r.team_now, /ChatGPT: T\d+ Fix the parser; editing index\.js/);
+  assert.match(formatWait(r), /team now: ChatGPT:/);
+  // Unchanged: not repeated.
+  await room.call('send', claude, { text: '@Gemini and the colors?' });
+  assert.equal((await room.call('wait', gemini, { timeout_seconds: 0 })).team_now, undefined);
+  await room.call('finish_task', gpt, { task_id: task.id, result: 'fixed' });
+  assert.equal(room.s.claims['index.js'], undefined);
+});
+
+test('memory stays tidy: duplicates merge, files import as memories, entries can be edited', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  const a = await room.call('remember', claude, { text: 'The API server runs on port 8080 in development' });
+  assert.equal((await room.call('remember', gpt, { text: 'the API server runs on port 8080 in development!' })).saved, a.saved);
+  const upd = await room.call('remember', gpt, { text: 'The API server runs on port 8080 in local development' });
+  assert.equal(upd.updated, a.saved);
+  assert.equal(room.s.memory.length, 1);
+  const r = await room.call('import_memory', claude, { text: '---\nname: notes\n---\n# Database\n- We use Postgres 16 with Prisma migrations\n- Never edit generated prisma client code\n# Style\n1. Components live in src/components by feature\nok\n- The API server runs on port 8080 in development' });
+  assert.deepEqual(r, { added: 3, merged: 1, skipped: 1 });
+  const db = room.s.memory.find((e) => /Postgres/.test(e.text));
+  assert.deepEqual(db.tags, ['imported', 'database']);
+  assert.equal((await room.call('recall', gpt, { query: 'prisma' })).memories.length, 2);
+  await room.call('edit_memory', HUMAN, { id: db.id, text: 'We use Postgres 17 with Prisma migrations', kind: 'decision' });
+  assert.equal(db.kind, 'decision');
+  await assert.rejects(room.call('edit_memory', gpt, { id: db.id, text: 'x y z w' }), /Only its author/);
+});
+
+test('project knowledge files are pointed out to everyone who joins', async () => {
+  const { room, members: [claude] } = await setup('Claude');
+  await assert.rejects(room.call('set_knowledge', claude, { files: ['missing.md'] }), /Not found/);
+  await room.call('set_knowledge', claude, { files: ['index.js'] });
+  const j = await room.call('join', null, { name: 'Newbie' });
+  assert.match(j.project_knowledge, /index\.js/);
+});

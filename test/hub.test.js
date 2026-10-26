@@ -322,7 +322,35 @@ test('dashboard events carry "seen by" changes for messages already on screen', 
   const msg = events.flatMap((e) => e.messages).find((m) => m.text === '@Seer did you see this?');
   assert.equal(msg.seenBy, undefined);
   await room.call('wait', seer, { timeout_seconds: 0 });
-  await until(() => events.some((e) => e.seen?.[msg.seq]));
-  assert.deepEqual(events.find((e) => e.seen?.[msg.seq]).seen[msg.seq], ['Seer']);
+  await until(() => events.some((e) => e.meta?.[msg.seq]));
+  assert.deepEqual(events.find((e) => e.meta?.[msg.seq]).meta[msg.seq].seenBy, ['Seer']);
+  await room.call('react', seer, { seq: msg.seq, emoji: '👍' });
+  await until(() => events.some((e) => e.meta?.[msg.seq]?.reactions));
+  assert.deepEqual(events.find((e) => e.meta?.[msg.seq]?.reactions).meta[msg.seq].reactions, { '👍': ['Seer'] });
   req.destroy();
+});
+
+test('an app that lost its connection is reconnected as the same member without a rejoin', async () => {
+  const connectAs = async (name) => {
+    const client = new Client({ name, version: '1.0.0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${hub.localBase}/r/${room.code}/mcp`)));
+    return client;
+  };
+  const first = await connectAs('solo-app');
+  await first.callTool({ name: 'join_room', arguments: { name: 'Solo' } });
+  await first.close();
+  // A new connection from the same app (restart, new process): it just carries on.
+  const second = await connectAs('solo-app');
+  const r = await second.callTool({ name: 'room_status', arguments: {} });
+  assert.ok(!r.isError, r.content[0].text);
+  assert.match(r.content[0].text, /^\(Reconnected you as Solo/);
+  await second.close();
+  // Two members from the same app: ambiguous, so it asks to rejoin instead of guessing.
+  const a = await connectAs('twin-app');
+  await a.callTool({ name: 'join_room', arguments: { name: 'TwinA' } });
+  const b = await connectAs('twin-app');
+  await b.callTool({ name: 'join_room', arguments: { name: 'TwinB' } });
+  const c = await connectAs('twin-app');
+  assert.match((await c.callTool({ name: 'room_status', arguments: {} })).content[0].text, /Not joined/);
+  for (const x of [a, b, c]) await x.close();
 });
