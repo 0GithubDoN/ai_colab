@@ -12,6 +12,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { Room, RoomError, HUMAN } from './room.js';
 import { createMcpServer } from './mcp.js';
 import { inviteText, invitePrompt } from './invite.js';
+import { savedDiff } from './taskdiff.js';
 import { startTunnel } from './tunnel.js';
 import { collectUsage, parseClaudeStatusline } from './usage.js';
 import { avatarSvg } from './avatars.js';
@@ -399,6 +400,18 @@ export class Hub {
       return sendJson(res, 200, { messages: room.dashboardMessages({ before: Number(url.searchParams.get('before')) || undefined, limit: 100 }) });
     }
 
+    if (sub[0] === 'log') {
+      if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
+      return sendJson(res, 200, await room.call('team_log', HUMAN, { about: url.searchParams.get('q') || undefined, limit: 200 }));
+    }
+
+    if (sub[0] === 'taskdiff' && sub[1]) {
+      if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
+      const t = room.s.tasks[String(sub[1]).toUpperCase()];
+      if (!t) throw new RoomError('No such task.', 404);
+      return sendText(res, 200, savedDiff(room.dataDir, t.id) || 'No changes were recorded for this task.');
+    }
+
     if (sub[0] === 'archive' && sub[1]) {
       if (!isAdmin(url.searchParams.get('key'))) throw new RoomError('Forbidden', 403);
       return sendText(res, 200, room.chapterText(sub[1]));
@@ -551,7 +564,7 @@ export class Hub {
 
 /** ?profile=lite and ?wait=<seconds> on the MCP URL (set by `crewroom connect` per app). */
 function mcpOptions(url) {
-  const profile = url.searchParams.get('profile') === 'lite' ? 'lite' : undefined;
+  const profile = ['lite', 'minimal'].includes(url.searchParams.get('profile')) ? url.searchParams.get('profile') : undefined;
   const wait = Number(url.searchParams.get('wait'));
   return { profile, defaultWait: Number.isFinite(wait) && wait > 0 ? wait : undefined };
 }

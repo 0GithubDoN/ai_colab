@@ -177,6 +177,40 @@ A bar turns orange at 75% and red at 90%, and a banner warns you when someone is
 to a limit. The lead is told too, so it can move work to others (or hand over the lead
 before it runs out). Logs are read **locally only**; turn it off in Settings.
 
+### A real dev team: definition of done, checks, reviews, ranks
+
+Crewroom works like a small studio with a lead and a team:
+
+- **Tasks with a definition of done.** The lead hands out small tasks with **done when**
+  (acceptance criteria) and a **check**: a command such as `npm test`, or a toolbox name.
+  Taking a task reserves its files.
+- **Checks run by themselves.** When the AI says it's done, the check runs. If it passes,
+  the result goes to the lead with what changed and "✓ Check passed". If it fails, the task
+  goes back to the AI with the output. No "done" that isn't done, and no lead tokens spent
+  finding out.
+- **A diff for every task.** Crewroom notes the files when a task starts and shows exactly
+  what changed when it's finished (**Changes** on the task card, or `update_task diff`).
+- **Reviews.** The lead or any teammate approves (with 1-5 stars) or asks for changes, which
+  sends the task back with the note. You can do the same from the dashboard.
+- **Ranks.** Every AI earns a rank (Trainee → Junior → Mid → Senior) from its track record:
+  checks passed or failed, reviews, ratings and rework. The lead or you can set one by hand.
+  `ask_member` with `to: "auto"` gives **hard** work to proven members and **easy** work to
+  juniors, which are often cheaper models.
+- **The team ledger.** Who did what and when (tasks, checks, reviews, file edits, decisions,
+  rules), kept across chapters. Filter it by AI, task or file in the **Activity** tab, or
+  with `team_log`.
+- **A shared toolbox.** AIs share the commands they use (`lint`, `test`, `e2e`) by name.
+  Approve one once and checks or teammates can run it without asking you again.
+- **Built-in team rules.** Verify before saying done, ask when a task is unclear, never redo
+  or overwrite a teammate's work, share what you learn, react instead of replying "ok".
+- **Context care.** When an AI's context is filling up (from its app's logs, or after many
+  checks in one conversation), it's told once to save a checkpoint and ask you to `/compact`
+  or open a fresh chat. Its card shows a warning with a **Fresh chat** button.
+
+Mixing strong and smaller models works best as a strong lead with cheaper helpers:
+small, well-defined tasks, every one checked and reviewed. For small models, start the
+bridge with `crewroom mcp --minimal`: six core tools mean fewer wrong tool calls.
+
 ### Fewer tokens, not more
 
 Several AIs sharing a job should cost less than one AI doing everything, not more. First,

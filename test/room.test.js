@@ -580,3 +580,98 @@ test('project knowledge files are pointed out to everyone who joins', async () =
   const j = await room.call('join', null, { name: 'Newbie' });
   assert.match(j.project_knowledge, /index\.js/);
 });
+
+const until = async (fn, ms = 5000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise((r) => setTimeout(r, 20)); assert.ok(fn(), 'condition not reached'); };
+
+test('a task check runs on finish: pass = result with diff to the asker, fail = back to the doer with the output', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  room.s.settings.commands = 'auto';
+  const fsx = await import('node:fs');
+  const file = path.join(room.projectRoot, 'index.js');
+  const node = JSON.stringify(process.execPath);
+  const check = `${node} -e "process.exit(require('fs').readFileSync('index.js','utf8').includes('fixed') ? 0 : 1)"`;
+  const { task } = await room.call('ask', claude, { to: 'ChatGPT', title: 'Fix index.js', files: ['index.js'], done_when: 'index.js says fixed', check });
+  await room.call('take_task', gpt, { task_id: task.id });
+  // First attempt: forgot the fix -> the check fails and the task comes back.
+  const r1 = await room.call('finish_task', gpt, { task_id: task.id, result: 'done!' });
+  assert.match(r1.note, /Running the check/);
+  await until(() => room.s.tasks[task.id].status === 'assigned');
+  const back = await room.call('wait', gpt, { timeout_seconds: 0 });
+  assert.ok(back.new_messages.some((m) => /check failed/.test(m.text)));
+  assert.equal(room.s.claims['index.js'].memberId, gpt.id); // files reserved again
+  // Second attempt: fixed -> passes, the asker gets the result with what changed.
+  fsx.writeFileSync(file, 'console.log("fixed");\n');
+  await room.call('finish_task', gpt, { task_id: task.id, result: 'really done' });
+  await until(() => room.s.tasks[task.id].status === 'done');
+  const forClaude = await room.call('wait', claude, { timeout_seconds: 0 });
+  const result = forClaude.new_messages.find((m) => m.kind === 'result');
+  assert.match(result.text, /Changed: index\.js \(\+1 −1\)/);
+  assert.match(result.text, /✓ Check passed/);
+  assert.match((await room.call('task_diff', claude, { task_id: task.id })).diff, /\+console\.log\("fixed"\);/);
+  const rank = room._rankOf(gpt);
+  assert.equal(rank.passed, 1);
+  assert.equal(rank.failed, 1);
+});
+
+test('a check needs the human unless its command is an approved toolbox tool', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  const ok = `${JSON.stringify(process.execPath)} -e "process.exit(0)"`;
+  await room.call('toolbox', gpt, { action: 'add', name: 'ok', command: ok, description: 'always passes' });
+  assert.equal(room.s.toolbox.ok.approved, undefined);
+  const { task } = await room.call('ask', claude, { to: 'ChatGPT', title: 'Something', check: 'ok' });
+  await room.call('take_task', gpt, { task_id: task.id });
+  await room.call('finish_task', gpt, { task_id: task.id, result: 'x' });
+  await until(() => room.s.tasks[task.id].checkResult?.status === 'waiting for approval');
+  await room.call('approve_command', HUMAN, { command_id: room.s.tasks[task.id].checkResult.commandId, approve: true });
+  await until(() => room.s.tasks[task.id].status === 'done');
+  // Approved once in the toolbox: runs without asking from then on.
+  await room.call('approve_tool', HUMAN, { name: 'ok' });
+  const t2 = (await room.call('ask', claude, { to: 'ChatGPT', title: 'Another', check: 'ok' })).task;
+  await room.call('take_task', gpt, { task_id: t2.id });
+  await room.call('finish_task', gpt, { task_id: t2.id, result: 'y' });
+  await until(() => room.s.tasks[t2.id].status === 'done');
+  assert.equal(room.s.tasks[t2.id].checkResult.status, 'passed');
+  assert.match((await room.call('toolbox', claude, { action: 'list' })).tools[0].command, /process\.exit\(0\)/);
+});
+
+test('reviews: approve with stars or send back; ranks follow the track record and can be set by the lead', async () => {
+  const { room, members: [claude, gpt, gemini] } = await setup('Claude', 'ChatGPT', 'Gemini');
+  const finish = async (who, title) => {
+    const { task } = await room.call('ask', claude, { to: who.name, title });
+    await room.call('take_task', who, { task_id: task.id });
+    await room.call('finish_task', who, { task_id: task.id, result: 'ok' });
+    return task.id;
+  };
+  const t1 = await finish(gpt, 'One');
+  await assert.rejects(room.call('review_task', gpt, { task_id: t1, verdict: 'approve' }), /own task/);
+  await room.call('review_task', claude, { task_id: t1, verdict: 'changes', note: 'Missing tests' });
+  assert.equal(room.s.tasks[t1].status, 'assigned');
+  const msgs = (await room.call('wait', gpt, { timeout_seconds: 0 })).new_messages;
+  assert.ok(msgs.some((m) => /changes requested.*\n.*Missing tests/s.test(m.text)));
+  await room.call('finish_task', gpt, { task_id: t1, result: 'with tests' });
+  await room.call('review_task', claude, { task_id: t1, verdict: 'approve', rating: 5 });
+  for (const n of ['Two', 'Three', 'Four', 'Five']) await room.call('review_task', claude, { task_id: await finish(gpt, n), verdict: 'approve', rating: 5 });
+  assert.equal(room._rankOf(gpt).title, 'Senior');
+  assert.equal(room._rankOf(gemini).title, 'Trainee');
+  await room.call('set_rank', claude, { name: 'Gemini', rank: 'mid' });
+  assert.deepEqual([room._rankOf(gemini).title, room._rankOf(gemini).manual], ['Mid', true]);
+  // auto routing: hard work goes to the senior, easy work to the lower rank.
+  assert.equal((await room.call('ask', claude, { to: 'auto', title: 'Hard one', difficulty: 'hard' })).task.assigned_to, 'ChatGPT');
+  const easy = await room.call('ask', claude, { to: 'auto', title: 'Easy one', difficulty: 'easy' });
+  assert.equal(easy.task.assigned_to, 'Gemini');
+  // The ledger remembers who did what.
+  const log = await room.call('team_log', claude, { about: 'ChatGPT' });
+  assert.ok(log.entries.some((e) => /ChatGPT: finished T\d+: One/.test(e)));
+  assert.ok((await room.call('team_log', claude, { about: t1 })).entries.some((e) => /Claude: asked for changes on/.test(e)));
+});
+
+test('context warnings ride along once: from app logs, or after many checks in one conversation', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  await room.call('update_settings', HUMAN, { humanName: 'Lucian' });
+  await room.call('update_me', gpt, { context_used_percent: 80 });
+  await room.call('send', claude, { text: '@ChatGPT next step' });
+  const r = await room.call('wait', gpt, { timeout_seconds: 0 });
+  assert.match(r.context_warning, /80% full: save a checkpoint.*ask Lucian to run \/compact or open a fresh chat/);
+  await room.call('send', claude, { text: '@ChatGPT and another' });
+  assert.equal((await room.call('wait', gpt, { timeout_seconds: 0 })).context_warning, undefined);
+});

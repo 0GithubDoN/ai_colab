@@ -29,6 +29,7 @@ export function formatWait(r) {
   else if (r.open_task_count) out.push(`(${r.open_task_count} open task(s) anyone can take: room_status lists them)`);
   if (r.reactions?.length) out.push(`(reactions to your messages: ${r.reactions.join(', ')})`);
   if (r.team_now) out.push(`team now: ${r.team_now}`);
+  if (r.context_warning) out.push(`⚠ ${r.context_warning}`);
   out.push(`next: ${r.guidance}`);
   return out.join('\n');
 }
