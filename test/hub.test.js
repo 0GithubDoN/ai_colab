@@ -276,8 +276,18 @@ test('lite profile drops the file tools; ?wait sets the default wait; public wai
   assert.ok(liteTools.some((t) => t.name === 'share_file'));
   assert.ok(JSON.stringify(liteTools).length < JSON.stringify(fullTools).length * 0.8, 'lite list is smaller');
   assert.match(liteTools.find((t) => t.name === 'wait_for_updates').inputSchema.properties.timeout_seconds.description, /Default 600/);
+  const minimal = await mcpClient(`${hub.localBase}/r/${room.code}/mcp?profile=minimal`);
+  assert.deepEqual((await minimal.client.listTools()).tools.map((t) => t.name).sort(), ['join_room', 'memory', 'read_messages', 'send_message', 'update_task', 'wait_for_updates']);
+  await minimal.client.close();
   await full.client.close();
   await lite.client.close();
+});
+
+test('the team ledger and task diffs are on the dashboard API (human only)', async () => {
+  const log = await (await fetch(`${hub.localBase}/r/${room.code}/log?key=${room.adminKey}`)).json();
+  assert.ok(Array.isArray(log.entries));
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/log`)).status, 403);
+  assert.equal((await fetch(`${hub.localBase}/r/${room.code}/taskdiff/T999?key=${room.adminKey}`)).status, 404);
 });
 
 test('fresh-chat prompt and archived chapters are available to the human only', async () => {

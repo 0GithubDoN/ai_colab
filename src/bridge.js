@@ -14,9 +14,10 @@ const REJOIN_ID = '__crewroom_rejoin__';
 const CHUNK_SECONDS = Number(process.env.CREWROOM_WAIT_CHUNK) || 270; // env: tests only
 const log = (...a) => process.stderr.write(`[crewroom] ${a.join(' ')}\n`);
 
-export async function runBridge({ home = homeDir(), lite = false, wait } = {}) {
+export async function runBridge({ home = homeDir(), lite = false, minimal = false, wait } = {}) {
   const query = new URLSearchParams();
-  if (lite) query.set('profile', 'lite');
+  if (minimal) query.set('profile', 'minimal');
+  else if (lite) query.set('profile', 'lite');
   if (wait) query.set('wait', String(wait));
   const qs = query.size ? `?${query}` : '';
   const pending = new Map(); // internal request id -> resolve

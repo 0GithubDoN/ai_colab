@@ -194,6 +194,19 @@
   .card code { font: 12px ui-monospace, monospace; background: var(--panel-2); padding: 3px 6px; border-radius: 5px; display: block; margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .st { font-size: 10.5px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--line); font-weight: 600; }
+  .st.checking { color: var(--accent); }
+  .chk { font-size: 11.5px; margin-top: 5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .chk.passed { color: var(--ok); } .chk.failed, .chk.denied { color: var(--bad); } .chk.running, .chk.waiting { color: var(--warn); }
+  .card .dw { font-size: 12px; margin-top: 4px; color: var(--muted); }
+  .card .acts { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 7px; }
+  .rank { font-size: 9.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 650; }
+  .rank.Senior { color: #b8860b; border-color: color-mix(in srgb, #b8860b 45%, var(--line)); }
+  .rank.Mid { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+  .ctxwarn { margin-top: 6px; font-size: 12px; color: var(--warn); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .diff { font: 12px/1.45 ui-monospace, monospace; white-space: pre; overflow: auto; max-height: 65vh; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .diff .add { color: var(--ok); } .diff .del { color: var(--bad); } .diff .hunk { color: var(--accent); }
+  .tl { font-size: 12.5px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .tl .when { color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 5px; }
   .st.open { color: var(--accent); } .st.assigned, .st.in_progress, .st.pending, .st.running { color: var(--warn); } .st.done, .st.finished { color: var(--ok); } .st.blocked, .st.denied, .st.timed_out, .st.expired { color: var(--bad); }
   .line { font-size: 12.5px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
   .line:last-child { border-bottom: 0; }
@@ -283,7 +296,7 @@
       <button class="on" data-tab="tasks">Tasks<span class="count" id="cTasks"></span></button>
       <button data-tab="files">Files<span class="count" id="cFiles"></span></button>
       <button data-tab="notes">Notes</button>
-      <button data-tab="log">Log</button>
+      <button data-tab="log">Activity</button>
     </div>
     <div class="tab on" id="tab-tasks">
       <div class="row" style="margin-bottom:8px"><span class="muted" style="font-size:12.5px">Work handed between AIs</span><span class="spacer"></span><button class="small" id="newTaskBtn">+ New task</button></div>
@@ -307,6 +320,11 @@
       <div id="notes"></div>
     </div>
     <div class="tab" id="tab-log">
+      <h3>Team ledger <span class="faint" style="text-transform:none;letter-spacing:0">who did what, kept across chapters</span></h3>
+      <input type="search" id="logSearch" placeholder="Filter: an AI, a task (T4) or a file…" style="width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:6px">
+      <div id="ledger" style="margin-bottom:14px"></div>
+      <h3>Toolbox <span class="faint" id="toolCount"></span><button class="small" id="toolAddBtn">+ Add</button></h3>
+      <div id="toolbox" style="margin-bottom:14px"></div>
       <h3>Commands run on this computer</h3>
       <div id="commands"></div>
     </div>
@@ -349,8 +367,16 @@
   <label for="taskKind">Kind</label>
   <select id="taskKind"><option>task</option><option>review</option><option>fix</option><option>asset</option><option>research</option><option>question</option></select>
   <label for="taskDetails">Details (optional)</label><textarea id="taskDetails"></textarea>
+  <label for="taskDone">Done when (optional)</label><input type="text" id="taskDone" placeholder="e.g. the toggle works and has a test">
+  <label for="taskCheck">Check that runs when it's finished (optional)</label><input type="text" id="taskCheck" placeholder="e.g. npm test, or a toolbox name">
   <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Create</button></div>
 </form></dialog>
+
+<dialog id="diffDlg" style="width:min(1000px,94vw)">
+  <h2 id="diffTitle">Changes</h2>
+  <div class="diff" id="diffBody"></div>
+  <div class="buttons"><button onclick="this.closest('dialog').close()">Close</button></div>
+</dialog>
 
 <dialog id="freshDlg">
   <h2>Continue <span id="freshName"></span> in a fresh chat</h2>
@@ -417,7 +443,7 @@ const ago = (ts) => { if (!ts) return 'never'; const s = Math.max(0, Math.round(
 const until = (ts) => { if (!ts) return ''; const m = Math.round((ts - Date.now()) / 60000); if (m <= 0) return 'resets now'; return m < 60 ? `resets in ${m}m` : m < 2880 ? `resets in ${Math.floor(m / 60)}h ${m % 60}m` : `resets ${new Date(ts).toLocaleDateString(undefined, { weekday: 'short' })}`; };
 const ktok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n || 0));
 const STATE_LABEL = { working: 'working', listening: 'listening', idle: 'idle', away: 'away', offline: 'not connected' };
-const TASK_LABEL = { assigned: 'assigned', in_progress: 'working', open: 'open', done: 'done', blocked: 'blocked', cancelled: 'cancelled' };
+const TASK_LABEL = { assigned: 'assigned', in_progress: 'working', open: 'open', done: 'done', blocked: 'blocked', cancelled: 'cancelled', checking: 'checking' };
 // Two letters, so Claude / ChatGPT / Codex don't all look like "C".
 const initials = (name) => { const w = String(name || '?').trim().split(/\s+/); return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).replace(/^./, (c) => c.toUpperCase()); };
 const memberByName = (name) => state?.members.find((m) => m.name === name);
@@ -570,6 +596,7 @@ function meter(label, pct, note) {
   return `<div class="meter ${cls}" title="${esc(note || '')}"><span>${label}</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, pct))}%"></i></span><span class="val">${Math.round(pct)}%</span></div>`;
 }
 
+const rankTip = (r) => `${r.title}${r.manual ? ' (set by hand)' : ''} · ${r.done} task${r.done === 1 ? '' : 's'} done · ${r.quality}% quality${r.passed || r.failed ? ` · checks ${r.passed}✓ ${r.failed}✗` : ''}${r.rework ? ` · ${r.rework} sent back` : ''}${r.rating ? ` · ${r.rating}★` : ''}`;
 function memberCard(m) {
   const u = m.usage;
   const meters = u ? [
@@ -581,7 +608,7 @@ function memberCard(m) {
   const doing = m.activity || (m.status === 'working' ? m.lastAction : m.status === 'listening' ? 'waiting for messages' : '');
   return `<div class="member ${m.status} ${m.paused ? 'is-paused' : ''} ${openMembers.has(m.name) ? 'open' : ''}" data-member="${esc(m.name)}">
     <div class="top">${avatar(m.name, m.status)}
-      <div style="min-width:0;flex:1"><div class="name" style="color:${colorOf(m.name)}">${esc(m.name)}${m.role === 'lead' ? '<span class="badge">lead</span>' : ''}${m.paused ? `<span class="badge paused" title="${esc(`by ${m.paused.by}${m.paused.reason ? `: ${m.paused.reason}` : ''}`)}">${m.paused.stopped ? 'stopped' : 'paused'}</span>` : ''}</div>
+      <div style="min-width:0;flex:1"><div class="name" style="color:${colorOf(m.name)}">${esc(m.name)}${m.role === 'lead' ? '<span class="badge">lead</span>' : ''}${m.rank && (m.rank.manual || (m.rank.done && m.role !== 'lead')) ? `<span class="rank ${m.rank.title}" title="${esc(rankTip(m.rank))}">${m.rank.title}</span>` : ''}${m.paused ? `<span class="badge paused" title="${esc(`by ${m.paused.by}${m.paused.reason ? `: ${m.paused.reason}` : ''}`)}">${m.paused.stopped ? 'stopped' : 'paused'}</span>` : ''}</div>
       <div class="state ${m.status}">${STATE_LABEL[m.status] || m.status}${m.status === 'working' ? ' <span class="typing"><i></i><i></i><i></i></span>' : ''}${['idle', 'offline', 'away'].includes(m.status) ? ` · last contact ${ago(m.lastSeen)}` : ''} · ${esc(m.app)}</div></div>
       ${m.unread && m.status !== 'listening' && m.status !== 'working' ? `<span class="unread" title="Messages are waiting for ${esc(m.name)}. If its app can't wake itself, nudge it there (e.g. “check the room”).">${m.unread} unread</span>` : ''}
       <button class="ghost small" data-toggle="${esc(m.name)}" title="Details">${openMembers.has(m.name) ? '▴' : '▾'}</button>
@@ -589,12 +616,15 @@ function memberCard(m) {
     <div class="model">${m.model ? `<b>${esc(m.model)}</b><span class="src ${m.source === 'logs' ? 'logs' : ''}">${m.source === 'logs' ? '✓ from app logs' : 'self-reported'}</span>` : '<span class="faint">model unknown: ask it which model it is</span>'}</div>
     ${doing ? `<div class="doing" title="${esc(doing)}">✎ ${esc(doing)}</div>` : ''}
     ${meters ? `<div class="meters">${meters}</div>${resets ? `<div class="meter-note">${esc(resets)}</div>` : ''}` : ''}
+    ${u?.contextPct >= 75 ? `<div class="ctxwarn">⚠ Context ${Math.round(u.contextPct)}% full: time for /compact or a fresh chat <button class="small" data-fresh="${esc(m.name)}">↻ Fresh chat</button></div>` : ''}
     <div class="more">
       <div>${u ? `Usage from ${esc(u.source)}${u.tokensIn ? ` · ${ktok(u.tokensIn)} in / ${ktok(u.tokensOut)} out` : ''}${u.costUsd ? ` · $${u.costUsd.toFixed(2)}` : ''}${u.note ? ` · ${esc(u.note)}` : ''}` : 'This app does not share token usage (cloud apps can only self-report).'}</div>
       <div style="margin-top:4px">Room traffic ≈ ${ktok(m.traffic.tokensIn + m.traffic.tokensOut)} tokens${m.traffic.tokensSaved ? ` · saved ≈ ${ktok(m.traffic.tokensSaved)} by focus mode` : ''}</div>
       <div style="margin-top:4px" title="Every check makes its app reread its whole conversation. Many empty checks = wasted tokens.">Checked the room ${m.stats?.checks || 0}×${m.stats?.checks ? ` (${m.stats.empty || 0} with nothing new)` : ''} · ${m.hasCheckpoint ? 'checkpoint saved ✓' : 'no checkpoint'}</div>
       <div style="margin-top:4px">${esc(m.via || '')}${m.client ? ` · client ${esc(m.client.name)}${m.client.version ? ` ${esc(m.client.version)}` : ''}` : ''} · seen ${ago(m.lastSeen)}</div>
       ${m.capabilities?.length ? `<div class="caps">${m.capabilities.map((c) => `<span class="cap">${esc(c)}</span>`).join('')}</div>` : ''}
+      ${m.rank ? `<div style="margin-top:4px">${esc(rankTip(m.rank))}</div>` : ''}
+      <div class="row"><span>Rank</span><select class="small" data-rank="${esc(m.name)}">${['auto', 'senior', 'mid', 'junior', 'trainee'].map((r) => `<option value="${r}" ${(m.rank?.manual ? m.rank.title.toLowerCase() : 'auto') === r ? 'selected' : ''}>${r === 'auto' ? `earned (${m.rank?.manual ? 'auto' : m.rank?.title || '—'})` : r}</option>`).join('')}</select></div>
       <div class="row"><span>Receives</span><span class="seg"><button class="${m.listen === 'focus' ? 'on' : ''}" data-focus="focus" data-name="${esc(m.name)}" title="Only what concerns it (saves tokens)">focus</button><button class="${m.listen === 'all' ? 'on' : ''}" data-focus="all" data-name="${esc(m.name)}" title="Every message">all</button></span></div>
       <div class="row"><button class="small" data-mention="${esc(m.name)}">@ Mention</button><button class="small" data-dm="${esc(m.name)}">Direct message</button><button class="small" data-fresh="${esc(m.name)}" title="Move it to a new conversation without losing context (saves tokens)">↻ Fresh chat</button>${m.role !== 'lead' ? `<button class="small" data-lead="${esc(m.name)}">Make lead</button>` : ''}</div>
       <div class="row">${m.paused ? `<button class="small primary" data-control="resume" data-name="${esc(m.name)}">▶ Resume</button>` : `<button class="small" data-control="pause" data-name="${esc(m.name)}">⏸ Pause</button><button class="small danger" data-control="stop" data-name="${esc(m.name)}" title="Pause it, free its files and reopen its tasks">■ Stop</button>`}<button class="small danger" data-kick="${esc(m.name)}">Remove</button></div>
@@ -636,7 +666,7 @@ function render() {
       const w = m.usage?.[k];
       if (w && w.used >= 85) warns.push({ bad: w.used >= 95, text: `${m.name} is at ${Math.round(w.used)}% of its ${label} limit${w.resetsAt ? ` (${until(w.resetsAt)})` : ''}` });
     }
-    if (m.usage?.contextPct >= 90) warns.push({ bad: false, text: `${m.name}'s context is ${Math.round(m.usage.contextPct)}% full` });
+    if (m.usage?.contextPct >= 75) warns.push({ bad: false, text: `${m.name}'s context is ${Math.round(m.usage.contextPct)}% full: /compact or a fresh chat` });
   }
   $('warnbar').style.display = warns.length ? 'block' : 'none';
   $('warnbar').className = `warnbar${warns.some((w) => w.bad) ? ' bad' : ''}`;
@@ -682,12 +712,26 @@ function render() {
   const active = s.tasks.filter((t) => !['done', 'cancelled'].includes(t.status));
   const finished = s.tasks.filter((t) => ['done', 'cancelled'].includes(t.status));
   $('cTasks').textContent = active.length ? active.length : '';
-  const taskCard = (t) => `<div class="card"><div class="row"><span class="st ${t.status}">${TASK_LABEL[t.status] || t.status}</span><span class="faint" style="font-size:12px">${t.id} · ${esc(t.kind)}</span></div>
-    <div class="t" style="margin-top:3px">${esc(t.title)}</div><div class="muted" style="font-size:12px">${esc(t.from)} → ${esc(t.owner || t.assigned_to)}</div>${t.result ? `<div class="r">${esc(t.result)}</div>` : ''}</div>`;
+  const checkLine = (t) => {
+    const c = t.check_result;
+    if (!c && !t.check) return '';
+    const st = c?.status || 'when finished';
+    const label = { passed: '✓ check passed', failed: '✗ check failed', running: '⏳ checking…', 'waiting for approval': '⏳ check waiting for your OK', denied: 'check denied', skipped: 'check skipped', interrupted: 'check interrupted' }[st] || `check ${st}`;
+    return `<div class="chk ${st.split(' ')[0]}">${label}<code style="font-size:11px">${esc(c?.command || t.check)}</code>${c?.output ? `<details><summary class="faint">output</summary><div class="diff" style="max-height:200px">${esc(c.output)}</div></details>` : ''}</div>`;
+  };
+  const taskCard = (t) => `<div class="card"><div class="row"><span class="st ${t.status}">${TASK_LABEL[t.status] || t.status}</span><span class="faint" style="font-size:12px">${t.id} · ${esc(t.kind)}${t.rework ? ` · reworked ${t.rework}×` : ''}</span>${t.review ? `<span class="spacer"></span><span style="font-size:11.5px;color:${t.review.verdict === 'approve' ? 'var(--ok)' : 'var(--warn)'}">${t.review.verdict === 'approve' ? `approved${t.review.rating ? ` ${'★'.repeat(t.review.rating)}` : ''}` : 'changes asked'} · ${esc(t.review.by)}</span>` : ''}</div>
+    <div class="t" style="margin-top:3px">${esc(t.title)}</div><div class="muted" style="font-size:12px">${esc(t.from)} → ${esc(t.owner || t.assigned_to)}</div>
+    ${t.done_when ? `<div class="dw">Done when: ${esc(t.done_when)}</div>` : ''}${checkLine(t)}${t.result ? `<div class="r">${esc(t.result)}</div>` : ''}
+    ${t.changes?.length || t.status === 'done' ? `<div class="acts">${t.changes?.length ? `<button class="small" data-diff="${t.id}" title="${esc(t.changes.map((c) => c.file).join(', '))}">Changes · ${t.changes.length} file${t.changes.length > 1 ? 's' : ''}</button>` : ''}${t.status === 'done' && t.review?.verdict !== 'approve' ? `<button class="small" data-review="${t.id}" data-verdict="approve">✓ Approve</button><button class="small" data-review="${t.id}" data-verdict="changes">↩ Request changes</button>` : ''}</div>` : ''}</div>`;
   const openDone = document.querySelector('details.done-tasks')?.open;
   $('tasks').innerHTML = (active.length ? active.map(taskCard).join('') : '<div class="empty">No active tasks.</div>')
     + (finished.length ? `<details class="done-tasks" ${openDone ? 'open' : ''}><summary>${finished.length} finished</summary>${finished.slice(0, 30).map(taskCard).join('')}</details>` : '');
 
+  const tb = s.toolbox || [];
+  $('toolCount').textContent = tb.length || '';
+  $('toolbox').innerHTML = tb.length ? tb.map((t) => `<div class="line row"><span style="flex:1;min-width:0"><b>${esc(t.name)}</b> <code style="font-size:11.5px">${esc(t.command)}</code>${t.description ? ` <span class="muted">${esc(t.description)}</span>` : ''} <span class="faint">· ${esc(t.by)}</span></span>${t.approved ? '<span class="faint" title="Runs without asking you">✓ approved</span>' : `<button class="small primary" data-tool-approve="${esc(t.name)}" title="Let AIs run it without asking each time">Approve</button>`}<button class="small ghost" data-tool-remove="${esc(t.name)}" title="Remove">✕</button></div>`).join('')
+    : '<div class="empty">No shared commands yet. AIs add the ones they use (lint, test, build) so nobody has to rediscover them; approve one and checks can run it without asking you.</div>';
+  if (document.querySelector('#tab-log.on') && Date.now() - lastLedger > 4000) loadLedger();
   $('cFiles').textContent = s.claims.length ? s.claims.length : '';
   $('claims').innerHTML = s.claims.length ? s.claims.map((c) => `<div class="line row"><b>${esc(c.path)}</b><span class="muted">· ${esc(c.by)}${c.note ? ` · ${esc(c.note)}` : ''}</span><span class="spacer"></span><button class="small" data-release="${esc(c.path)}">free</button></div>`).join('') : '<div class="empty">Nobody is editing a file.</div>';
   $('assets').innerHTML = s.assets.length ? s.assets.slice(0, 45).map((a) => `<a href="${a.url}" target="_blank" rel="noopener" title="${esc(a.name)} · from ${esc(a.from)}">${a.mime.startsWith('image/') ? `<img src="${a.url}" alt="" loading="lazy">` : `<div class="file">${esc(a.name.split('.').pop())}</div>`}${esc(a.name)}</a>`).join('') : '<div class="empty" style="grid-column:1/-1">Nothing shared yet. Drop files anywhere on this page.</div>';
@@ -765,6 +809,34 @@ $('text').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); }
 });
 $('memSearch').addEventListener('input', () => state && renderMemory());
+async function openDiff(id) {
+  $('diffTitle').textContent = `Changes in ${id}`;
+  const text = await fetch(`${base}/taskdiff/${id}?key=${encodeURIComponent(KEY)}`).then((r) => r.text());
+  $('diffBody').innerHTML = text.split('\n').map((l) => `<span class="${l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : l.startsWith('@@') ? 'hunk' : ''}">${esc(l)}</span>`).join('\n');
+  $('diffDlg').showModal();
+}
+let ledgerTimer = null;
+let lastLedger = 0;
+async function loadLedger() {
+  lastLedger = Date.now();
+  clearTimeout(ledgerTimer);
+  ledgerTimer = setTimeout(async () => {
+    const q = $('logSearch').value.trim();
+    const r = await fetch(`${base}/log?key=${encodeURIComponent(KEY)}${q ? `&q=${encodeURIComponent(q)}` : ''}`).then((x) => x.json());
+    const list = (r.entries || []).slice().reverse();
+    $('ledger').innerHTML = list.length ? list.slice(0, 150).map((e) => { const [d, t, ...rest] = e.split(' '); return `<div class="tl"><span class="when">${esc(d)} ${esc(t)}</span>${esc(rest.join(' '))}</div>`; }).join('') : '<div class="empty">Nothing recorded yet.</div>';
+  }, 250);
+}
+$('logSearch').addEventListener('input', loadLedger);
+$('toolAddBtn').onclick = () => editText('Add a shared tool', 'name: command, e.g. "lint: npm run lint". Tools you add are approved: AIs and checks can run them without asking you.', '', (v) => {
+  const m = v.match(/^\s*([\w.-]+)\s*:\s*(.+)$/s);
+  if (!m) return alert('Write it as name: command');
+  act('toolbox', { action: 'add', name: m[1], command: m[2].trim() });
+}, 'Add');
+document.addEventListener('change', (e) => {
+  const sel = e.target.closest('select[data-rank]');
+  if (sel) act('set_rank', { name: sel.dataset.rank, rank: sel.value });
+});
 $('memAddBtn').onclick = () => editText('Remember', 'A short fact, decision or preference every AI can recall.', '', (v) => v.trim() && act('remember', { text: v.trim() }), 'Remember');
 $('memImportBtn').onclick = () => editText('Import memories', 'Paste a memory file, e.g. your lead AI\'s notes about the project (Claude can give you its memory file). Each bullet or line becomes one memory; # headings become tags; duplicates are merged.', '', async (v) => {
   if (!v.trim()) return;
@@ -851,11 +923,12 @@ $('settingsDlg').addEventListener('close', () => {
 $('newTaskBtn').onclick = () => { $('taskForm').reset(); $('taskDlg').showModal(); };
 $('taskDlg').addEventListener('close', () => {
   if ($('taskDlg').returnValue !== 'ok' || !$('taskTitle').value.trim()) return;
-  act('ask', { title: $('taskTitle').value.trim(), to: $('taskTo').value || undefined, kind: $('taskKind').value, details: $('taskDetails').value });
+  act('ask', { title: $('taskTitle').value.trim(), to: $('taskTo').value || undefined, kind: $('taskKind').value, details: $('taskDetails').value, done_when: $('taskDone').value.trim() || undefined, check: $('taskCheck').value.trim() || undefined });
 });
 document.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.id === `tab-${b.dataset.tab}`));
+  if (b.dataset.tab === 'log') loadLedger();
 });
 document.querySelectorAll('.chip').forEach((c) => c.onclick = () => {
   filter = c.dataset.filter;
@@ -892,6 +965,18 @@ document.addEventListener('click', (e) => {
   if (b.dataset.mention) insertMention(b.dataset.mention);
   if (b.dataset.dm) { $('to').value = b.dataset.dm; $('text').focus(); }
   if (b.dataset.fresh) openFresh(b.dataset.fresh);
+  if (b.dataset.diff) openDiff(b.dataset.diff);
+  if (b.dataset.review) {
+    const verdict = b.dataset.verdict;
+    if (verdict === 'approve') {
+      const stars = prompt(`Approve ${b.dataset.review}. Rating 1-5 (optional):`, '5');
+      if (stars !== null) act('review_task', { task_id: b.dataset.review, verdict, rating: Number(stars) || undefined });
+    } else {
+      editText(`Request changes on ${b.dataset.review}`, 'What needs fixing? The task goes back to whoever did it, with your note.', '', (v) => v.trim() && act('review_task', { task_id: b.dataset.review, verdict, note: v.trim() }), 'Send back');
+    }
+  }
+  if (b.dataset.toolApprove) act('approve_tool', { name: b.dataset.toolApprove });
+  if (b.dataset.toolRemove && confirm(`Remove the tool "${b.dataset.toolRemove}"?`)) act('toolbox', { action: 'remove', name: b.dataset.toolRemove });
   if (b.dataset.reactPick) {
     document.querySelector('.react-pick')?.remove();
     b.closest('.col').insertAdjacentHTML('beforeend', `<div class="react-pick">${REACTS.map((e) => `<button type="button" data-react="${e}" data-seq="${b.dataset.reactPick}">${e}</button>`).join('')}</div>`);

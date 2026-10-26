@@ -78,29 +78,32 @@ export function createMcpServer(ctx) {
   // Apps that edit files with their own tools (Claude Code, Codex, Antigravity, Cursor...) get
   // a lite set without the room's file tools: fewer definitions resent with every request.
   const LITE_SKIP = new Set(['list_files', 'read_file', 'search_files', 'project_changes', 'write_file', 'edit_file', 'restore_file', 'run_command']);
+  // Small models make fewer mistakes with fewer tools: the minimal set is just the core loop.
+  const MINIMAL = new Set(['join_room', 'wait_for_updates', 'send_message', 'update_task', 'read_messages', 'memory']);
   const tool = (name, description, shape, annotations, handler, meta) => {
     if (ctx.profile === 'lite' && LITE_SKIP.has(name)) return;
+    if (ctx.profile === 'minimal' && !MINIMAL.has(name)) return;
     server.registerTool(name, { description, inputSchema: shape, annotations, ...(meta ? { _meta: meta } : {}) }, handler);
   };
   const defaultWait = Math.min(Math.max(Number(ctx.defaultWait) || 45, 5), 3600);
   // The style list is long and would be resent with every request; a wrong style returns it.
-  const AVATAR_HINT = 'Your picture, "style:seed", e.g. "lorelei:sunny" or "bottts:me" (a wrong style lists all styles).';
+  const AVATAR_HINT = 'Picture: "style:seed", e.g. "lorelei:sunny" (a wrong style lists them all).';
 
   // ---------------- room ----------------
 
   tool(
     'join_room',
-    'Join a Crewroom room (the user gives you the invite code or link). Returns your token, the lead, brief, summary and rules. Continuing in a fresh conversation? Pass your token: you get the summary, your checkpoint and your tasks.',
+    'Join with the invite code or link. Rejoining (e.g. in a fresh chat)? Pass your token: you get back the summary, your checkpoint and your tasks.',
     {
       invite: z.string().optional().describe('Invite code (ABCD-EFGH-JKLM) or link.'),
       name: z.string().describe('Short name others @mention, e.g. "ChatGPT".'),
       app: z.string().optional().describe('App you run in.'),
       model: z.string().optional().describe('Your exact model, as far as you know it.'),
-      capabilities: z.array(z.string()).optional().describe('e.g. image-generation, web-search, code-execution, terminal, browser.'),
+      capabilities: z.array(z.string()).optional().describe('e.g. image-generation, web-search, terminal.'),
       avatar: z.string().optional().describe(AVATAR_HINT),
       lead: z.boolean().optional().describe('Become lead if there is none.'),
-      listen: z.enum(['focus', 'all']).optional().describe('focus (default for members) or all (default for the lead).'),
-      token: z.string().optional().describe('Old token, to come back as the same member.'),
+      listen: z.enum(['focus', 'all']).optional().describe('Default: focus for members, all for the lead.'),
+      token: z.string().optional().describe('Your token, to come back as yourself.'),
     },
     WRITE,
     async (args) => {
@@ -135,9 +138,9 @@ export function createMcpServer(ctx) {
 
   tool(
     'wait_for_updates',
-    'New messages and tasks for you; waits up to timeout_seconds if nothing is new. Follow the "next:" line. Every check costs tokens (your app rereads its conversation), so wait as long as your app allows.',
+    'New messages and tasks for you; waits up to timeout_seconds when nothing is new. Follow the "next:" line. Each check costs tokens, so wait as long as your app allows.',
     {
-      timeout_seconds: z.number().optional().describe(`Default ${defaultWait}. Longer waits = fewer checks = fewer tokens.`),
+      timeout_seconds: z.number().optional().describe(`Default ${defaultWait}.`),
       include_history: z.number().optional().describe('Also return this many earlier messages.'),
     },
     RO,
@@ -152,7 +155,7 @@ export function createMcpServer(ctx) {
 
   tool(
     'send_message',
-    'Post to everyone, or to one member with "to" (name, "lead" or "human"). @Name gets someone\'s attention; @everyone reaches all. react_to: react to message #seq with an emoji in text instead of replying "ok" (wakes nobody).',
+    'Post to everyone, or to one member with "to" (name, "lead", "human"). @Name gets attention. react_to: react to message #seq with an emoji as text instead of replying "ok" (wakes nobody).',
     { text: z.string(), to: z.string().optional(), attachments: z.array(z.string()).optional().describe('Shared file ids.'), react_to: z.number().optional() },
     WRITE,
     act((a) => (a.react_to ? ['react', { seq: a.react_to, emoji: a.text }] : ['send', a])),
@@ -170,10 +173,13 @@ export function createMcpServer(ctx) {
 
   tool(
     'ask_member',
-    'Hand work to teammates and get results back. to: a name, several ("Gemini, Codex"), "auto" or "auto:<skill>" (picks a free, able teammate with usage headroom), or empty for anyone. wait_seconds: wait for the result in this call.',
+    'Give work to teammates; results come back to you. to: name(s), "auto" or "auto:<skill>" (picks by skill, rank, usage), or empty for anyone. Keep tasks small, with done_when and a check (runs on finish; a failure sends it back).',
     {
       title: z.string(),
-      details: z.string().optional().describe('Instructions and what "done" means.'),
+      details: z.string().optional().describe('Instructions.'),
+      done_when: z.string().optional().describe('Acceptance criteria.'),
+      check: z.string().optional().describe('Command or toolbox name that verifies it, e.g. "npm test".'),
+      difficulty: z.enum(['easy', 'normal', 'hard']).optional().describe('auto routing: hard -> top ranks, easy -> juniors.'),
       to: z.string().optional(),
       kind: z.enum(['task', 'review', 'fix', 'question', 'asset', 'research']).optional(),
       files: z.array(z.string()).optional(),
@@ -185,11 +191,13 @@ export function createMcpServer(ctx) {
 
   tool(
     'update_task',
-    'take: start a task. done / blocked / cancel: report it (result goes to the asker). wait: wait for a task you handed out.',
+    'take (reserves its files) | done / blocked / cancel (result goes to the asker; the check runs first) | wait (for a task you gave) | diff (what changed) | review (verdict approve or changes, rating 1-5, note in result).',
     {
       task_id: z.string(),
-      action: z.enum(['take', 'done', 'blocked', 'cancel', 'wait']),
+      action: z.enum(['take', 'done', 'blocked', 'cancel', 'wait', 'diff', 'review']),
       result: z.string().optional(),
+      verdict: z.enum(['approve', 'changes']).optional(),
+      rating: z.number().optional(),
       attachments: z.array(z.string()).optional().describe('Shared file ids, e.g. an image you made.'),
       wait_seconds: z.number().optional(),
     },
@@ -197,13 +205,15 @@ export function createMcpServer(ctx) {
     act((a) => {
       if (a.action === 'take') return ['take_task', { task_id: a.task_id }];
       if (a.action === 'wait') return ['wait_task', { task_id: a.task_id, wait_seconds: a.wait_seconds ?? 45 }];
+      if (a.action === 'diff') return ['task_diff', { task_id: a.task_id }];
+      if (a.action === 'review') return ['review_task', { task_id: a.task_id, verdict: a.verdict, rating: a.rating, note: a.result }];
       return ['finish_task', { task_id: a.task_id, result: a.result, attachments: a.attachments, status: a.action === 'cancel' ? 'cancelled' : a.action }];
     }),
   );
 
   tool(
     'update_me',
-    'Your profile and state: activity, status away/online, focus or all, model, avatar ("style:seed"), checkpoint (private notes to self: what you are doing and next steps; returned when you rejoin, e.g. in a fresh conversation), and usage numbers if your app shows them.',
+    'Your state: activity, status, focus, model, avatar, checkpoint (notes to self, returned when you rejoin, e.g. in a fresh chat), usage numbers if your app shows them.',
     {
       activity: z.string().optional(),
       status: z.enum(['online', 'away']).optional(),
@@ -222,7 +232,7 @@ export function createMcpServer(ctx) {
 
   tool(
     'memory',
-    'Room memory that saves tokens. remember: store a short fact, decision, preference or lesson (private: only you can recall it; duplicates merge). recall: search with a few words, returns only the best matches. forget / edit: by id. import: add a whole memory file (text; one memory per bullet, # headings become tags), e.g. your notes about the project, so teammates can recall them.',
+    'Room memory. remember: a short fact, decision, preference or lesson (private = only you). recall: a few words, best matches only. edit / forget: by id. import: text of a memory file (one memory per bullet, # headings = tags) to share what you know.',
     {
       action: z.enum(['remember', 'recall', 'forget', 'edit', 'import']),
       text: z.string().optional(),
@@ -241,18 +251,35 @@ export function createMcpServer(ctx) {
           : a.action === 'import' ? ['import_memory', { text: a.text, tags: a.tags, kind: a.kind }]
             : ['remember', { text: a.text, tags: a.tags, kind: a.kind, private: a.private }])),
   );
-  tool('set_summary', 'Room summary (goal, decisions, who does what, what is left). Newcomers read it instead of the chat. Lead: refresh it when the chat gets long.', { text: z.string() }, WRITE, act('set_summary'));
+  tool(
+    'team_log',
+    'The team ledger (kept across chapters): who did what and when. about: a member name, task id or file path; empty = latest.',
+    { about: z.string().optional(), limit: z.number().optional() },
+    RO,
+    act('team_log'),
+  );
+
+  tool(
+    'toolbox',
+    'Commands the team shares by name (lint, test, e2e...). list | add (name, command, description) | run (name; approved tools run without asking the human) | remove.',
+    { action: z.enum(['list', 'add', 'run', 'remove']), name: z.string().optional(), command: z.string().optional(), description: z.string().optional(), wait_seconds: z.number().optional() },
+    WRITE,
+    act('toolbox'),
+  );
+
 
   tool(
     'lead_action',
-    'Lead only. knowledge: files everyone should read first (value = comma-separated project paths, e.g. CLAUDE.md). new_chapter: archive the chat and start fresh (value = summary); everyone keeps summary, memory and tasks and can continue in a cheaper fresh conversation. pause / resume: one member (name) or the whole team. stop: pause a member, free its files, reopen its tasks. lead: hand over the lead (name). brief: set the brief (value). focus: a member\'s focus (name, value focus|all).',
-    { action: z.enum(['new_chapter', 'knowledge', 'pause', 'resume', 'stop', 'lead', 'brief', 'focus']), name: z.string().optional(), value: z.string().optional() },
+    'Lead only. new_chapter (value = summary): archive the chat, everyone continues fresh. summary / brief (value). knowledge (value: files to read first, comma-separated). rank (name, value senior|mid|junior|trainee|auto). pause / resume (name, or everyone). stop (name): pause it, free its files, reopen its tasks. lead (name). focus (name, value focus|all).',
+    { action: z.enum(['new_chapter', 'summary', 'knowledge', 'rank', 'pause', 'resume', 'stop', 'lead', 'brief', 'focus']), name: z.string().optional(), value: z.string().optional() },
     WRITE,
     act((a) => {
       if (['pause', 'resume', 'stop'].includes(a.action) && a.name) return ['control_member', { name: a.name, action: a.action, reason: a.value }];
       if (a.action === 'stop') throw new RoomError('stop needs the member name.');
       if (a.action === 'new_chapter') return ['new_chapter', { summary: a.value }];
       if (a.action === 'knowledge') return ['set_knowledge', { files: a.value }];
+      if (a.action === 'summary') return ['set_summary', { text: a.value }];
+      if (a.action === 'rank') return ['set_rank', { name: a.name, rank: a.value }];
       return {
         brief: ['set_brief', { brief: a.value }],
         lead: ['set_lead', { name: a.name || a.value }],
@@ -295,7 +322,7 @@ export function createMcpServer(ctx) {
 
   tool(
     'share_file',
-    'Share a file with the team: an image you generated (ChatGPT: pass it as "file"), a URL, a project path, base64 or text. Returns an id for get_asset / save_asset.',
+    'Share a file: a generated image (ChatGPT: pass it as "file"), a URL, a project path, base64 or text. Returns an id for get_asset / save_asset.',
     {
       file: z.any().optional().describe('A file from your conversation/sandbox, e.g. a generated image.'),
       url: z.string().optional(),

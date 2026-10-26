@@ -8,7 +8,7 @@ import { homeDir, readJson, writeJson, normalizeCode, openInBrowser, VERSION, CL
 import { ensureHub, runningHub, hubApi, findProjectRoot } from '../src/client.js';
 import { formatWait, formatMessage as fmtMsg, formatTask } from '../src/format.js';
 
-const BOOLEAN_FLAGS = new Set(['lead', 'all', 'json', 'decision', 'away', 'back', 'public', 'open', 'yes', 'y', 'list', 'off', 'new-code', 'help', 'h', 'remove', 'stdin', 'private', 'lite', 'resume']);
+const BOOLEAN_FLAGS = new Set(['lead', 'all', 'json', 'decision', 'away', 'back', 'public', 'open', 'yes', 'y', 'list', 'off', 'new-code', 'help', 'h', 'remove', 'stdin', 'private', 'lite', 'resume', 'minimal']);
 
 function parseArgs(argv) {
   const flags = {};
@@ -69,6 +69,11 @@ FOR AI AGENTS WITH A TERMINAL (run in the project folder)
   crewroom me --as Claude [--avatar lorelei:sunny] [--model "..."] [--focus all|focus] ["activity"]
   crewroom checkpoint --as Claude "doing X; next Y"   saved for when you rejoin in a fresh conversation
   crewroom react --as Claude 12 👍                    acknowledge message #12 without a reply (free)
+  crewroom ask ... --done-when "tests pass" --check "npm test" [--difficulty easy|normal|hard]
+  crewroom review --as Claude T3 approve|changes [--rating 4] ["note"]   crewroom diff --as Claude T3
+  crewroom log --as Claude [Codex | T3 | src/app.js]   the team ledger: who did what
+  crewroom tool --as Codex add lint npm run lint [--desc "..."] | run lint | list | remove lint
+  crewroom rank --as Claude --name Codex senior|mid|junior|trainee|auto   (lead)
   crewroom import-memory --as Claude --file notes.md  share a memory file with the room (bullets -> memories)
   crewroom knowledge --as Claude CLAUDE.md docs/x.md  (lead) files every AI reads first
   crewroom chapter --as Claude "where we are"         (lead) archive the chat and start a new chapter
@@ -79,8 +84,9 @@ FOR AI AGENTS WITH A TERMINAL (run in the project folder)
 
 ADVANCED
   crewroom hub [--port 7777] [--host 127.0.0.1] [--public-url URL]   run the hub in the foreground
-  crewroom mcp [--lite] [--wait 600]   stdio MCP server (what apps launch; set up by "connect").
-                                --lite: no file tools (for apps with their own); --wait: default
+  crewroom mcp [--lite|--minimal] [--wait 600]   stdio MCP server (what apps launch; set up by "connect").
+                                --lite: no file tools (for apps with their own); --minimal: 6 core
+                                tools for small models (fewer mistakes); --wait: default
                                 wait in seconds (long waits are split for the hub; fewer checks)
   crewroom statusline           Claude Code status line: shows model/context/limits and sends them
                                 to the dashboard (set up by "crewroom connect claude-code")
@@ -358,7 +364,7 @@ async function main() {
     case 'hub': return cmdHub(flags);
     case 'mcp': {
       const { runBridge } = await import('../src/bridge.js');
-      return runBridge({ lite: !!flags.lite, wait: flags.wait ? Number(flags.wait) : undefined });
+      return runBridge({ lite: !!flags.lite, minimal: !!flags.minimal, wait: flags.wait ? Number(flags.wait) : undefined });
     }
     case 'statusline': return cmdStatusline();
     case 'connect':
@@ -432,7 +438,7 @@ async function main() {
     case 'ask': {
       if (!text) die('Usage: crewroom ask --to <member> "title" [--details "..." | --stdin | --file <path>]');
       const details = flags.stdin || flags.file ? await longText() : flags.details;
-      return out(await call('ask', { title: text, to: flags.to, kind: flags.kind, details, files: flags.files, wait_seconds: flags.wait ? Number(flags.wait) : undefined }));
+      return out(await call('ask', { title: text, to: flags.to, kind: flags.kind, details, files: flags.files, wait_seconds: flags.wait ? Number(flags.wait) : undefined, done_when: flags['done-when'], check: flags.check, difficulty: flags.difficulty }));
     }
     case 'take':
       return out(await call('take_task', { task_id: pos[0] }));
@@ -516,6 +522,21 @@ async function main() {
     }
     case 'forget':
       return out(await call('forget', { id: pos[0] }));
+    case 'review':
+      if (!pos[0] || !['approve', 'changes'].includes(pos[1])) die('Usage: crewroom review --as Claude T3 approve|changes [--rating 4] ["note"]');
+      return out(await call('review_task', { task_id: pos[0], verdict: pos[1], rating: flags.rating ? Number(flags.rating) : undefined, note: pos.slice(2).join(' ') || undefined }));
+    case 'diff': {
+      const r = await call('task_diff', { task_id: pos[0] });
+      return flags.json ? out(r) : console.log(r.diff);
+    }
+    case 'log': {
+      const r = await call('team_log', { about: text || undefined, limit: flags.limit ? Number(flags.limit) : 40 });
+      return flags.json ? out(r) : console.log(r.entries.join('\n') || r.note);
+    }
+    case 'tool':
+      return out(await call('toolbox', { action: pos[0] || 'list', name: pos[1], command: pos.slice(2).join(' ') || undefined, description: flags.desc, wait_seconds: flags.wait ? Number(flags.wait) : undefined }));
+    case 'rank':
+      return out(await call('set_rank', { name: flags.name || pos[0], rank: flags.name ? pos[0] : pos[1] }));
     case 'react':
       if (!pos[0] || !pos[1]) die('Usage: crewroom react --as Claude <message #> <emoji>');
       return out(await call('react', { seq: Number(String(pos[0]).replace('#', '')), emoji: pos[1] }));
