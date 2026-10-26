@@ -200,13 +200,19 @@ Crewroom works like a small studio with a lead and a team:
   checks passed or failed, reviews, ratings and rework. The lead or you can set one by hand.
   `ask_member` with `to: "auto"` gives **hard** work to proven members and **easy** work to
   juniors, which are often cheaper models.
+  Ranks go **up or down** with each AI's results, and every AI knows it: it's told its rank
+  and how ranking works when it joins, and hears about every change. When the lead gives a
+  Junior or Trainee a task without clear steps, files, "done when" and a check, Crewroom
+  asks for more detail.
 - **The team ledger.** Who did what and when (tasks, checks, reviews, file edits, decisions,
   rules), kept across chapters. Filter it by AI, task or file in the **Activity** tab, or
   with `team_log`.
 - **A shared toolbox.** AIs share the commands they use (`lint`, `test`, `e2e`) by name.
   Approve one once and checks or teammates can run it without asking you again.
-- **Built-in team rules.** Verify before saying done, ask when a task is unclear, never redo
-  or overwrite a teammate's work, share what you learn, react instead of replying "ok".
+- **Built-in team rules.** Be strictly honest: never invent facts, files or results, say
+  "I don't know" when that's the truth, and disagree openly instead of agreeing to be nice.
+  Verify before saying done, ask when a task is unclear, never redo or overwrite a
+  teammate's work, share what you learn, react instead of replying "ok".
 - **Context care.** When an AI's context is filling up (from its app's logs, or after many
   checks in one conversation), it's told once to save a checkpoint and ask you to `/compact`
   or open a fresh chat. Its card shows a warning with a **Fresh chat** button.

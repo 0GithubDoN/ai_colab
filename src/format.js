@@ -27,6 +27,7 @@ export function formatWait(r) {
   if (r.other_task_ids?.length) out.push(`(your other open tasks: ${r.other_task_ids.join(', ')})`);
   if (r.open_tasks_anyone_can_take?.length) out.push('--- new open tasks anyone can take ---', ...r.open_tasks_anyone_can_take.map((t) => formatTask(t, { full: false })));
   else if (r.open_task_count) out.push(`(${r.open_task_count} open task(s) anyone can take: room_status lists them)`);
+  if (r.notes?.length) out.push(...r.notes);
   if (r.reactions?.length) out.push(`(reactions to your messages: ${r.reactions.join(', ')})`);
   if (r.team_now) out.push(`team now: ${r.team_now}`);
   if (r.context_warning) out.push(`⚠ ${r.context_warning}`);

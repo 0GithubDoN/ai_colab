@@ -652,6 +652,12 @@ test('reviews: approve with stars or send back; ranks follow the track record an
   await room.call('review_task', claude, { task_id: t1, verdict: 'approve', rating: 5 });
   for (const n of ['Two', 'Three', 'Four', 'Five']) await room.call('review_task', claude, { task_id: await finish(gpt, n), verdict: 'approve', rating: 5 });
   assert.equal(room._rankOf(gpt).title, 'Senior');
+  // It knows: the change rides along with its next real update.
+  await room.call('send', claude, { text: '@ChatGPT great work' });
+  const upd = await room.call('wait', gpt, { timeout_seconds: 0 });
+  assert.ok(upd.notes.some((n) => /Your rank is now Senior \(was Mid\)/.test(n)));
+  assert.match(formatWait(upd), /🏅 Your rank is now Senior/);
+  assert.match((await room.call('join', null, { token: gemini.token })).your_rank, /^New\. Everyone is ranked by results/);
   assert.equal(room._rankOf(gemini).title, 'New');
   await room.call('set_rank', claude, { name: 'Gemini', rank: 'mid' });
   assert.deepEqual([room._rankOf(gemini).title, room._rankOf(gemini).manual], ['Mid', true]);
