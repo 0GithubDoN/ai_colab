@@ -67,6 +67,17 @@
   .avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 650; font-size: 11.5px; letter-spacing: .02em; flex: none; position: relative; }
   .avatar .dot { position: absolute; right: -1px; bottom: -1px; border: 2px solid var(--panel); width: 11px; height: 11px; }
   .avatar.sm { width: 22px; height: 22px; font-size: 9.5px; }
+  .avatar.xs { width: 16px; height: 16px; font-size: 7px; }
+  /* seen indicator: who this message was actually delivered to */
+  .seen { display: flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 11px; color: var(--faint); position: relative; width: max-content; cursor: default; }
+  .seen .stack { display: inline-flex; }
+  .seen .avatar.xs + .avatar.xs { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--bg); }
+  .seen .pop { display: none; position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 10; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 8px 10px; min-width: 150px; font-size: 12.5px; color: var(--text); }
+  .seen:hover .pop, .seen:focus-within .pop { display: grid; gap: 5px; }
+  .seen .pop .row { display: flex; align-items: center; gap: 7px; }
+  .seen .pop .muted { font-size: 11px; }
+  /* in a run of messages from one author, only the last one shows it */
+  .msg:has(+ .msg.cont) .seen { display: none; }
   .avatar img { width: 100%; height: 100%; border-radius: 50%; display: block; }
   .avatar.img { border: 1px solid var(--line); }
   .working-strip .stack { display: inline-flex; flex: none; }
@@ -419,6 +430,7 @@ function connect() {
     assignColors(data.members || []);
     if (data.reset) { messages = fresh; renderFeed(true); }
     else if (fresh.length) { messages.push(...fresh); appendMessages(fresh); }
+    if (!data.reset) updateSeen(data.seen);
     if (messages.length > 3000) messages.splice(0, messages.length - 3000);
     render();
   };
@@ -452,6 +464,26 @@ function appendMessages(list) {
     if (node) feed.appendChild(node);
   }
   if (nearBottom || list.some((m) => m.fromId === 'human')) feed.scrollTop = feed.scrollHeight;
+}
+
+// "Seen" = delivered to that AI. Hover shows who; nothing for messages nobody needed to see yet.
+function seenHtml(m) {
+  const names = m.seenBy || [];
+  if (!names.length) return m.fromId === 'human' ? '<div class="seen" tabindex="0">✓ Sent<div class="pop"><span class="muted">Not seen by any AI yet</span></div></div>' : '';
+  const shown = names.slice(0, 4).map((n) => avatar(n, '', 'xs')).join('');
+  const more = names.length > 4 ? ` +${names.length - 4}` : '';
+  return `<div class="seen" tabindex="0"><span class="stack">${shown}</span>✓✓ Seen${names.length > 1 ? ` by ${names.length}` : ''}${more}<div class="pop"><span class="muted">Seen by</span>${names.map((n) => `<div class="row">${avatar(n, '', 'xs')}<span style="color:${colorOf(n)};font-weight:600">${esc(n)}</span></div>`).join('')}</div></div>`;
+}
+function updateSeen(seen) {
+  for (const [seq, names] of Object.entries(seen || {})) {
+    const m = messages.find((x) => x.seq === Number(seq));
+    if (!m) continue;
+    m.seenBy = names || undefined;
+    const node = document.querySelector(`#feed .msg[data-seq="${seq}"] .col`);
+    if (!node) continue;
+    node.querySelector('.seen')?.remove();
+    node.insertAdjacentHTML('beforeend', seenHtml(m));
+  }
 }
 
 function messageNode(m) {
@@ -488,7 +520,8 @@ function messageNode(m) {
   const att = (m.attachments || []).map((a) => a.mime.startsWith('image/') ? `<a href="${a.url}" target="_blank" rel="noopener"><img src="${a.url}" alt="${esc(a.name)}"></a>` : `<a href="${a.url}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join('');
   wrap.innerHTML = `${avatar(from)}<div class="col">
     <div class="head"><span class="who" style="color:${m.fromId === 'human' ? 'var(--text)' : colorOf(m.from)}">${esc(from)}</span>${m.to !== 'everyone' ? `<span>→ ${esc(m.to === 'Human' ? 'you' : m.to)}</span>` : ''}${m.task_id ? `<span class="tag">${m.task_id}</span>` : ''}<span class="faint">${new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
-    <div class="body">${long ? `<div class="txt clamp">${linkify(esc(m.text))}</div><button class="more-btn" type="button">Show more ▾</button>` : linkify(esc(m.text))}${att ? `<div class="att">${att}</div>` : ''}</div></div>`;
+    <div class="body">${long ? `<div class="txt clamp">${linkify(esc(m.text))}</div><button class="more-btn" type="button">Show more ▾</button>` : linkify(esc(m.text))}${att ? `<div class="att">${att}</div>` : ''}</div>${seenHtml(m)}</div>`;
+  wrap.dataset.seq = m.seq;
   return wrap;
 }
 const linkify = (html) => html

@@ -327,7 +327,26 @@ export class Room extends EventEmitter {
   dashboardMessages({ after = 0, before, limit = 200 } = {}) {
     let list = this.s.messages.filter((m) => m.seq > after && (!before || m.seq < before));
     list = list.slice(-limit);
-    return list.map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to, quiet: m.quiet || undefined }));
+    return list.map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to, quiet: m.quiet || undefined, seenBy: this.seenNames(m) }));
+  }
+
+  /** "Seen" means the message was actually delivered to that AI (not just skipped as chatter). */
+  _markSeen(actor, list) {
+    if (!actor || actor.id === HUMAN_ID) return;
+    let changed = false;
+    for (const m of list) {
+      if (m.kind === 'system' || m.from === actor.id) continue;
+      m.seenBy ||= [];
+      if (!m.seenBy.includes(actor.id)) {
+        m.seenBy.push(actor.id);
+        changed = true;
+      }
+    }
+    if (changed) this._changed('seen');
+  }
+
+  seenNames(m) {
+    return m.seenBy?.length ? m.seenBy.map((id) => this._nameOf(id)) : undefined;
   }
 
   _relevantFor(member, m) {
@@ -806,6 +825,7 @@ const ACTIONS = {
     if (signal?.aborted) throw new RoomError('Wait cancelled by the app.', 499);
     // Deliver at most MAX_BATCH messages; the rest stay queued for the next wait.
     const batch = deliver.slice(0, MAX_BATCH);
+    this._markSeen(actor, batch);
     const queued = deliver.length - batch.length;
     const upTo = queued ? batch[batch.length - 1].seq : this.s.seq;
     const skippedNow = skipped.filter((m) => m.seq <= upTo);
@@ -868,12 +888,15 @@ const ACTIONS = {
       const id = this._resolveTarget(from);
       list = list.filter((m) => m.from === id);
     }
-    return { messages: list.slice(-Math.min(Number(limit) || 30, 200)).map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })) };
+    list = list.slice(-Math.min(Number(limit) || 30, 200));
+    this._markSeen(actor, list);
+    return { messages: list.map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })) };
   },
 
   read_message(actor, { seq }) {
     const m = this.s.messages.find((x) => x.seq === Number(seq));
     if (!m || (actor.id !== HUMAN_ID && m.to !== null && m.to !== actor.id && m.from !== actor.id)) throw new RoomError(`No message #${seq}.`, 404);
+    this._markSeen(actor, [m]);
     return { message: this._formatMessage(m, actor) };
   },
 

@@ -1,7 +1,7 @@
 # Crewroom installer for Windows.
-#   irm https://raw.githubusercontent.com/0GithubDoN/ai_colab/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/0GithubDoN/crewroom/main/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
-$Package = 'https://github.com/0GithubDoN/ai_colab/archive/refs/heads/main.tar.gz'
+$Package = 'https://github.com/0GithubDoN/crewroom/archive/refs/heads/main.tar.gz'
 
 function Get-NodeMajor {
   try { return [int]((node --version) -replace '^v(\d+).*', '$1') } catch { return 0 }

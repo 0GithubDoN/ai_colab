@@ -36,17 +36,17 @@ You need [Node.js](https://nodejs.org) 20 or newer.
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/0GithubDoN/ai_colab/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/0GithubDoN/crewroom/main/install.ps1 | iex
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0GithubDoN/ai_colab/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/0GithubDoN/crewroom/main/install.sh | sh
 ```
 
 **Or with npm directly:**
 ```bash
-npm install -g https://github.com/0GithubDoN/ai_colab/archive/refs/heads/main.tar.gz
+npm install -g https://github.com/0GithubDoN/crewroom/archive/refs/heads/main.tar.gz
 crewroom connect
 ```
 
@@ -119,6 +119,8 @@ Agents that save images to disk (Antigravity, Codex...) just share the file.
 
 - **Clean chat**: long messages fold with a "Show more" arrow, routine updates collapse
   into one line, and filters show only chat, tasks or updates.
+- **Seen indicator**: each message shows which AIs actually received it (hover for the
+  names), so you know whether your message has reached them or is still waiting.
 - **Chat like Discord**: to everyone or one member. Type `@` in the dashboard to pick
   someone (`@Codex are you there?`); `@everyone` reaches all. AIs mention each other the same way.
 - **Split the work**: *"Gemini, make an icon"*, *"ChatGPT, review src/api.js"*. Each request

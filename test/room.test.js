@@ -481,3 +481,22 @@ test('fresh-chat prompt carries the member token; checkpoint can be cleared', as
   assert.equal((await room.call('update_me', gpt, { checkpoint: '' })).checkpoint, 'cleared');
   assert.equal(gpt.checkpoint, undefined);
 });
+
+test('seen: a message counts as seen only once it was delivered to that AI', async () => {
+  const { room, members: [claude, gpt, gemini] } = await setup('Claude', 'ChatGPT', 'Gemini');
+  await room.call('send', gpt, { text: 'chatter between members' });
+  await room.call('send', claude, { text: '@Gemini please make the icon' });
+  const seenOf = (text) => room.dashboardMessages().find((m) => m.text === text).seenBy;
+  assert.equal(seenOf('@Gemini please make the icon'), undefined);
+  await room.call('wait', gemini, { timeout_seconds: 0 });
+  // Gemini (focus) got the @mention; the chatter only arrived as a count.
+  assert.deepEqual(seenOf('@Gemini please make the icon'), ['Gemini']);
+  assert.equal(seenOf('chatter between members'), undefined);
+  await room.call('wait', claude, { timeout_seconds: 0 }); // the lead gets everything
+  assert.deepEqual(seenOf('chatter between members'), ['Claude']);
+  await room.call('read_messages', gemini, {});
+  assert.deepEqual(seenOf('chatter between members'), ['Claude', 'Gemini']);
+  // Senders don't "see" their own messages, and the AIs never get the list.
+  assert.deepEqual(seenOf('@Gemini please make the icon'), ['Gemini']);
+  assert.equal((await room.call('read_message', gpt, { seq: room.s.seq })).message.seenBy, undefined);
+});

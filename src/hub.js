@@ -409,6 +409,7 @@ export class Hub {
       // First push sends recent messages; later pushes only the new ones, so a long chat stays cheap.
       let lastSeq = 0;
       let chapter = room.s.chapter || 1;
+      const seenSent = new Map(); // seq -> how many "seen by" names this dashboard has
       const push = () => {
         // A new chapter replaced the chat: start the dashboard's feed over.
         if ((room.s.chapter || 1) !== chapter) {
@@ -417,9 +418,18 @@ export class Hub {
         }
         const messages = room.dashboardMessages({ after: lastSeq, limit: lastSeq ? 500 : 200 });
         const reset = lastSeq === 0;
+        if (reset) seenSent.clear();
+        // "Seen by" changes on messages the dashboard already has: only what changed.
+        const seen = {};
+        for (const m of room.s.messages.slice(-500)) {
+          const n = m.seenBy?.length || 0;
+          if (n === (seenSent.get(m.seq) || 0)) continue;
+          seenSent.set(m.seq, n);
+          if (m.seq <= lastSeq && !reset) seen[m.seq] = room.seenNames(m);
+        }
         if (messages.length) lastSeq = messages[messages.length - 1].seq;
         else if (reset) lastSeq = room.s.seq;
-        res.write(`data: ${JSON.stringify({ ...room.snapshot({ messageLimit: 0 }), messages, reset, links: this.links(room) })}\n\n`);
+        res.write(`data: ${JSON.stringify({ ...room.snapshot({ messageLimit: 0 }), messages, seen, reset, links: this.links(room) })}\n\n`);
       };
       let timer = null;
       const onChange = () => { if (!timer) timer = setTimeout(() => { timer = null; push(); }, 120); };

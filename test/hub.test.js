@@ -296,3 +296,33 @@ test('fresh-chat prompt and archived chapters are available to the human only', 
   assert.equal((await fetch(`${hub.localBase}/r/${room.code}/archive/${before}`)).status, 403);
   assert.equal((await fetch(`${hub.localBase}/r/${room.code}/archive/99?key=${room.adminKey}`)).status, 404);
 });
+
+test('dashboard events carry "seen by" changes for messages already on screen', async () => {
+  const events = [];
+  const req = http.get({ host: '127.0.0.1', port: hub.port, path: `/r/${room.code}/events?key=${room.adminKey}` });
+  req.on('response', (res) => {
+    let buf = '';
+    res.on('data', (c) => {
+      buf += c;
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        if (chunk.startsWith('data: ')) events.push(JSON.parse(chunk.slice(6)));
+      }
+    });
+  });
+  const until = async (fn) => { for (let i = 0; i < 50 && !fn(); i++) await new Promise((r) => setTimeout(r, 50)); assert.ok(fn()); };
+  const r = await room.call('join', null, { name: 'Seer' });
+  const seer = room.memberByToken(r.your_token);
+  await room.call('wait', seer, { timeout_seconds: 0 });
+  await until(() => events.length);
+  await room.call('send', { id: 'human', name: 'Human' }, { text: '@Seer did you see this?' });
+  await until(() => events.some((e) => e.messages.some((m) => m.text === '@Seer did you see this?')));
+  const msg = events.flatMap((e) => e.messages).find((m) => m.text === '@Seer did you see this?');
+  assert.equal(msg.seenBy, undefined);
+  await room.call('wait', seer, { timeout_seconds: 0 });
+  await until(() => events.some((e) => e.seen?.[msg.seq]));
+  assert.deepEqual(events.find((e) => e.seen?.[msg.seq]).seen[msg.seq], ['Seer']);
+  req.destroy();
+});
