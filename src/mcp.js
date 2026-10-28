@@ -11,7 +11,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RoomError, RULES } from './room.js';
-import { normalizeCode, VERSION, IMAGE_EXTS } from './util.js';
+import { normalizeCode, VERSION, IMAGE_EXTS, writeJson, identityPath } from './util.js';
 import { formatWait, compactJson } from './format.js';
 
 const RO = { readOnlyHint: true, openWorldHint: false };
@@ -99,7 +99,7 @@ export function createMcpServer(ctx) {
       name: z.string().describe('Short name others @mention, e.g. "ChatGPT".'),
       app: z.string().optional().describe('App you run in.'),
       model: z.string().optional().describe('Your exact model, as far as you know it.'),
-      capabilities: z.array(z.string()).optional().describe('e.g. image-generation, web-search, terminal.'),
+      capabilities: z.array(z.string()).optional().describe('e.g. image-generation, terminal.'),
       avatar: z.string().optional().describe(AVATAR_HINT),
       lead: z.boolean().optional().describe('Become lead if there is none.'),
       listen: z.enum(['focus', 'all']).optional().describe('Default: focus for members, all for the lead.'),
@@ -127,6 +127,13 @@ export function createMcpServer(ctx) {
         const client = server.server.getClientVersion?.();
         const result = await room.call('join', null, { ...args, client, via: ctx.local ? 'mcp (local)' : 'mcp (public link)' });
         ctx.token = result.your_token;
+        // Same identity in a terminal on this computer: `crewroom wait --as Name` just works.
+        if (ctx.local && hub.home) {
+          try {
+            const joined = room.memberByToken(result.your_token);
+            writeJson(identityPath(hub.home, room.code, joined.name), { name: joined.name, token: joined.token }, { mode: 0o600 });
+          } catch {}
+        }
         const out = text(result);
         room.account(room.memberByToken(result.your_token), JSON.stringify(args).length, out.content[0].text.length);
         return out;
@@ -151,14 +158,14 @@ export function createMcpServer(ctx) {
     }, formatWait),
   );
 
-  tool('room_status', 'Members (status, model, usage), open tasks, files being edited, summary, decisions, notes, shared files.', {}, RO, act('status'));
+  tool('room_status', 'Room overview. scope "me": just your work now (tasks, claims, unread, latest from human and lead).', { scope: z.enum(['room', 'me']).optional() }, RO, act((a) => (a.scope === 'me' ? ['my_work', {}] : ['status', {}])));
 
   tool(
     'send_message',
-    'Post to everyone, or to one member with "to" (name, "lead", "human"). @Name gets attention. react_to: react to message #seq with an emoji as text instead of replying "ok" (wakes nobody).',
-    { text: z.string(), to: z.string().optional(), attachments: z.array(z.string()).optional().describe('Shared file ids.'), react_to: z.number().optional() },
+    'Post to everyone, or to one member with "to" (name, "lead", "human"). @Name gets attention. react_to: react to #seq with an emoji as text instead of replying "ok".',
+    { text: z.string(), to: z.string().optional(), attachments: z.array(z.string()).optional().describe('Shared file ids.'), react_to: z.number().optional(), delete_seq: z.number().optional().describe('Delete your message #seq.') },
     WRITE,
-    act((a) => (a.react_to ? ['react', { seq: a.react_to, emoji: a.text }] : ['send', a])),
+    act((a) => (a.delete_seq ? ['delete_message', { seq: a.delete_seq }] : a.react_to ? ['react', { seq: a.react_to, emoji: a.text }] : ['send', a])),
   );
 
   tool(
@@ -173,15 +180,15 @@ export function createMcpServer(ctx) {
 
   tool(
     'ask_member',
-    'Give work to teammates; results come back to you. to: name(s), "auto" or "auto:<skill>" (picks by skill, rank, usage), or empty for anyone. Keep tasks small, with done_when and a check (runs on finish; a failure sends it back).',
+    'Give work to teammates; results come back to you. to: name(s), "auto" or "auto:<skill>" (by skill, rank, usage), or empty for anyone. Small tasks with done_when and a check (runs on finish; failing sends it back).',
     {
       title: z.string(),
       details: z.string().optional().describe('Instructions.'),
       done_when: z.string().optional().describe('Acceptance criteria.'),
-      check: z.string().optional().describe('Command or toolbox name that verifies it, e.g. "npm test".'),
+      check: z.string().optional().describe('Command or toolbox name (e.g. "npm test"), or "manual".'),
       difficulty: z.enum(['easy', 'normal', 'hard']).optional().describe('auto routing: hard -> top ranks, easy -> juniors.'),
       to: z.string().optional(),
-      kind: z.enum(['task', 'review', 'fix', 'question', 'asset', 'research']).optional(),
+      kind: z.enum(['task', 'review', 'fix', 'question', 'asset', 'research', 'report']).optional(),
       files: z.array(z.string()).optional(),
       wait_seconds: z.number().optional(),
     },
@@ -213,7 +220,7 @@ export function createMcpServer(ctx) {
 
   tool(
     'update_me',
-    'Your state: activity, status, focus, model, avatar, checkpoint (notes to self, returned when you rejoin, e.g. in a fresh chat), usage numbers if your app shows them.',
+    'Your state: activity, status, focus, model, avatar, checkpoint (notes to self, returned when you rejoin), usage numbers if your app shows them.',
     {
       activity: z.string().optional(),
       status: z.enum(['online', 'away']).optional(),
@@ -253,7 +260,7 @@ export function createMcpServer(ctx) {
   );
   tool(
     'team_log',
-    'The team ledger (kept across chapters): who did what and when. about: a member name, task id or file path; empty = latest.',
+    'Team ledger: who did what, when. about: a member, task id or file; empty = latest.',
     { about: z.string().optional(), limit: z.number().optional() },
     RO,
     act('team_log'),
@@ -261,7 +268,7 @@ export function createMcpServer(ctx) {
 
   tool(
     'toolbox',
-    'Commands the team shares by name (lint, test, e2e...). list | add (name, command, description) | run (name; approved tools run without asking the human) | remove.',
+    'Shared commands by name (lint, test...). list | add (name, command, description) | run (approved ones run without asking) | remove.',
     { action: z.enum(['list', 'add', 'run', 'remove']), name: z.string().optional(), command: z.string().optional(), description: z.string().optional(), wait_seconds: z.number().optional() },
     WRITE,
     act('toolbox'),
@@ -270,7 +277,7 @@ export function createMcpServer(ctx) {
 
   tool(
     'lead_action',
-    'Lead only. new_chapter (value = summary): archive the chat, everyone continues fresh. summary / brief (value). knowledge (value: files to read first, comma-separated). rank (name, value senior|mid|junior|trainee|auto). pause / resume (name, or everyone). stop (name): pause it, free its files, reopen its tasks. lead (name). focus (name, value focus|all).',
+    'Lead only. new_chapter (value = summary): archive the chat, all continue fresh. summary / brief (value). knowledge (value: files to read first). rank (name, value senior|mid|junior|trainee|auto). pause / resume (name, or all). stop (name): pause, free files, reopen tasks. lead (name). focus (name, value focus|all).',
     { action: z.enum(['new_chapter', 'summary', 'knowledge', 'rank', 'pause', 'resume', 'stop', 'lead', 'brief', 'focus']), name: z.string().optional(), value: z.string().optional() },
     WRITE,
     act((a) => {
@@ -311,8 +318,8 @@ export function createMcpServer(ctx) {
 
   tool('search_files', 'Search text in project files.', { query: z.string(), dir: z.string().optional(), max_results: z.number().optional() }, RO, act('search_files'));
   tool('project_changes', 'Git status, diff and recent commits (review others\' work).', { path: z.string().optional() }, RO, act('project_changes'));
-  tool('claim_file', 'Claim a file before editing so nobody else edits it; release: true when done.', { path: z.string(), note: z.string().optional(), release: z.boolean().optional() }, WRITE,
-    act((a) => (a.release ? ['release_file', { path: a.path }] : ['claim_file', { path: a.path, note: a.note }])));
+  tool('claim_file', 'Claim files before editing (path, or paths/globs like "a/*.txt"); release: true when done; no path = list claims.', { path: z.string().optional(), paths: z.array(z.string()).optional(), note: z.string().optional(), release: z.boolean().optional() }, WRITE,
+    act((a) => (a.release ? ['release_file', { path: a.path, paths: a.paths }] : ['claim_file', { path: a.path, paths: a.paths, note: a.note }])));
   tool('write_file', 'Create or overwrite a project file (old version kept). Claim it first.', { path: z.string(), content: z.string() }, DESTRUCTIVE, act('write_file'));
   tool('edit_file', 'Replace exact text in a file (old_text must match once unless replace_all).', { path: z.string(), old_text: z.string(), new_text: z.string(), replace_all: z.boolean().optional() }, DESTRUCTIVE, act('edit_file'));
   tool('restore_file', 'Undo: restore an earlier version of a file edited through the room (list: true shows versions).', { path: z.string(), version: z.string().optional(), list: z.boolean().optional() }, DESTRUCTIVE,
@@ -350,7 +357,8 @@ export function createMcpServer(ctx) {
           rest.name ||= f.file_name || f.name;
           rest.mime ||= f.mime_type || f.mimeType;
         }
-        const out = text(await room.call('share_file', member, rest));
+        // Files outside the project only from apps on this computer, never over the public link.
+        const out = text(await room.call('share_file', member, { ...rest, allowOutside: !!ctx.local }));
         room.account(member, JSON.stringify(rest).length, out.content[0].text.length);
         return out;
       } catch (err) {

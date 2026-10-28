@@ -132,10 +132,23 @@ Agents that save images to disk (Antigravity, Codex...) just share the file.
   Changed rules are sent to each AI right away and come back when it rejoins.
 - **No double work**: taking a task reserves its files for whoever does it, and each AI gets
   a one-line "team now" (who is doing what) whenever that changes.
+  Claim many files at once, globs included (`locale/*/*.txt`), and list who holds what.
+- **Less waste**: messages arriving together come in one call, routine notices (joined,
+  reconnected) wake nobody, and what matters to an AI (direct messages, @mentions, its
+  tasks, you, the lead) is never cut short. `room_status` with scope `me` (or
+  `crewroom now`) answers "what is mine right now" in one call.
 - **Shared knowledge**: the lead (or you, in Notes → Memory → Import) imports a memory
   file, e.g. Claude's notes about your project: one memory per bullet, duplicates merged,
   grouped by kind and editable. List project knowledge files (like `CLAUDE.md`) in
   Settings and every AI is told to read them when it joins.
+- **Your tools on the dashboard**: drop files (logs, screenshots) into the room, send a 🧪
+  **test report** (what worked, what failed, files) that becomes a task for the lead,
+  delete messages, search the chat, and merge a dead duplicate ("Claude 2") into the real
+  member. If you message an AI that isn't listening, the dashboard tells you to nudge it.
+- **Keep listening or rest**: in Settings, choose whether idle AIs keep waiting (they
+  answer you right away; each check costs a little) or end their turn to save tokens
+  (you nudge them when needed). Apps like Codex and ChatGPT can't be woken from outside
+  once their turn ends, so "keep listening" is the default.
 - **Reconnects by itself**: if an app restarts its connection, it carries on as the same
   member without being told to rejoin (when only one member came from that app).
 - **Chat like Discord**: to everyone or one member. Type `@` in the dashboard to pick

@@ -37,11 +37,12 @@ const MAX_MESSAGE_CHARS = 1500; // longer messages are trimmed in wait results (
 const SUMMARY_NUDGE = 80; // ask the lead for a summary after this many messages
 const CHAPTER_NUDGE = 200; // suggest a new chapter after this many messages in the current one
 const REST_AFTER = 3; // empty short checks in a row before an AI is told to rest
+const SETTLE_MS = 800; // after the first news, wait this long for the rest of a burst
 // What a paused member may not do through the room (it can still read, wait and talk).
 const PAUSE_BLOCKS = new Set(['write_file', 'edit_file', 'restore_file', 'claim_file', 'save_asset', 'share_file', 'run_command', 'take_task', 'finish_task', 'ask', 'set_brief', 'set_summary']);
 // onlineSeconds: how long after its last contact an AI still counts as connected. Long, because
 // AIs often think or work for many minutes without touching the room.
-const DEFAULT_SETTINGS = { leadAwayMinutes: 10, onlineSeconds: 1800, commands: 'ask', readUsage: true, humanName: '', rules: '', knowledge: [] };
+const DEFAULT_SETTINGS = { leadAwayMinutes: 10, onlineSeconds: 1800, commands: 'ask', readUsage: true, humanName: '', rules: '', knowledge: [], idle: 'listen' };
 
 export class Room extends EventEmitter {
   constructor({ projectRoot, name }) {
@@ -326,7 +327,7 @@ export class Room extends EventEmitter {
     delete t.pendingStatus;
     t.updatedAt = now();
     const cr = t.checkResult;
-    const check = cr ? `\n${cr.status === 'passed' ? `✓ Check passed: \`${cr.command}\` (${Math.round((cr.durationMs || 0) / 100) / 10}s)` : `Check \`${cr.command}\`: ${cr.status}${cr.note ? ` (${cr.note})` : ''}`}` : '';
+    const check = cr?.status === 'manual' ? '\nNeeds manual verification: check it by hand, then approve or request changes.' : cr ? `\n${cr.status === 'passed' ? `✓ Check passed: \`${cr.command}\` (${Math.round((cr.durationMs || 0) / 100) / 10}s)` : `Check \`${cr.command}\`: ${cr.status}${cr.note ? ` (${cr.note})` : ''}`}` : '';
     const changed = t.changes?.length ? `\nChanged: ${t.changes.map((x) => (x.added !== undefined ? `${x.file} (+${x.added} −${x.removed})` : `${x.file} (${x.note})`)).join(', ')}` : '';
     this._addMessage({
       from: owner.id, to: t.from === owner.id ? null : t.from, kind: 'result', taskId: t.id, attachments: t.attachments,
@@ -341,6 +342,34 @@ export class Room extends EventEmitter {
     t.owner = ownerId;
     t.updatedAt = now();
     for (const f of t.files || []) if (!this.s.claims[f]) this.s.claims[f] = { memberId: ownerId, ts: now(), note: t.id, taskId: t.id };
+  }
+
+  /** Paths and globs (src/**\/*.js, locale/*\/*.txt) to project files. */
+  _expandPaths(list) {
+    const out = new Set();
+    for (const raw of toList(list)) {
+      if (!/[*?]/.test(raw)) { out.add(this.safePath(raw).rel); continue; }
+      // ** across folders, * and ? within one; placeholders so one step does not undo another.
+      const glob = String(raw).replace(/\\/g, '/').replace(/^\.\//, '').replace(/[.+^${}()|[\]]/g, '\\$&')
+        .replace(/\*\*\//g, '\u0000').replace(/\*\*/g, '\u0001').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')
+        .replace(/\u0000/g, '(?:.*/)?').replace(/\u0001/g, '.*');
+      const re = new RegExp(`^${glob}$`);
+      let budget = 20_000;
+      const walk = (d) => {
+        for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+          if (--budget <= 0 || out.size >= 300) return;
+          if (IGNORED_DIRS.has(ent.name)) continue;
+          const full = path.join(d, ent.name);
+          if (ent.isDirectory()) walk(full);
+          else {
+            const rel = path.relative(this.projectRoot, full).replace(/\\/g, '/');
+            if (re.test(rel)) out.add(rel);
+          }
+        }
+      };
+      walk(this.projectRoot);
+    }
+    return [...out];
   }
 
   _setKnowledge(files) {
@@ -408,7 +437,10 @@ export class Room extends EventEmitter {
   }
 
   _concerns(member, m) {
+    if (m.deleted) return false;
     if (m.to === member.id) return true;
+    // Routine notices (joined, reconnected, ran a command...) never wake anyone up.
+    if (m.kind === 'system' && m.quiet) return false;
     if (this.listenOf(member) === 'all') return true;
     if (m.kind === 'system') return !m.quiet;
     if (m.from === HUMAN_ID || m.from === this.s.leadId) return true;
@@ -524,7 +556,17 @@ export class Room extends EventEmitter {
     return msg;
   }
 
+  /** Direct messages, @mentions, its tasks and anything from the human or the lead: always in full. */
+  _important(member, m) {
+    if (m.to === member.id || m.from === HUMAN_ID || m.from === this.s.leadId) return true;
+    if (m.to === null && mentions(m.text, member.name)) return true;
+    const t = m.taskId && this.s.tasks[m.taskId];
+    return !!t && (t.to === member.id || t.owner === member.id || t.from === member.id);
+  }
+
   _formatMessage(m, forMember, { maxChars } = {}) {
+    if (m.deleted) return { seq: m.seq, time: new Date(m.ts).toISOString(), from: this._nameOf(m.from), to: m.to ? this._nameOf(m.to) : 'everyone', kind: m.kind, text: '(message deleted)' };
+    if (forMember && maxChars && this._important(forMember, m)) maxChars = Math.max(maxChars, 8000);
     let text = m.text;
     if (maxChars && text.length > maxChars) text = `${text.slice(0, maxChars)} …[${text.length} chars; read_message ${m.seq} for the rest]`;
     const out = { seq: m.seq, time: new Date(m.ts).toISOString(), from: this._nameOf(m.from), to: m.to ? this._nameOf(m.to) : 'everyone', kind: m.kind, text };
@@ -538,7 +580,7 @@ export class Room extends EventEmitter {
   dashboardMessages({ after = 0, before, limit = 200 } = {}) {
     let list = this.s.messages.filter((m) => m.seq > after && (!before || m.seq < before));
     list = list.slice(-limit);
-    return list.map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to, quiet: m.quiet || undefined, seenBy: this.seenNames(m), reactions: this.reactionNames(m) }));
+    return list.map((m) => ({ ...this._formatMessage(m), fromId: m.from, toId: m.to, quiet: m.quiet || undefined, seenBy: this.seenNames(m), reactions: this.reactionNames(m), deleted: m.deleted || undefined }));
   }
 
   reactionNames(m) {
@@ -804,13 +846,25 @@ export class Room extends EventEmitter {
     throw new RoomError('Only the lead or the human can do that.', 403);
   }
 
+  /** What is waiting for a member: count, latest seq and a preview of what matters. */
+  _unreadPack(member) {
+    const unread = this.s.messages.filter((m) => m.seq > (member.cursor || 0) && this._relevantFor(member, m) && this._concerns(member, m));
+    if (!unread.length) return { latest_seq: this.s.seq };
+    return {
+      latest_seq: this.s.seq,
+      unread_for_you: `${unread.length} unread (your cursor is at #${member.cursor || 0}): call wait_for_updates to get them.`,
+      unread_preview: unread.filter((m) => this._important(member, m)).slice(-5).map((m) => `#${m.seq} ${this._nameOf(m.from)}: ${m.text.slice(0, 200)}`),
+    };
+  }
+
   _welcome(member, { resume = false } = {}) {
     // Coming back (e.g. in a fresh conversation): only what it needs to continue, nothing more.
     const pack = resume ? {
       your_checkpoint: member.checkpoint?.text,
       your_tasks: this._tasksFor(member).mine.map((t) => compact({ id: t.id, kind: t.kind, title: t.title, status: t.status, from: t.from })),
       // Context it already read; anything unread still comes with the next wait.
-      recent_for_you: this.s.messages.filter((m) => m.seq <= (member.cursor || 0) && this._relevantFor(member, m) && this._concerns(member, m) && !(m.kind === 'system' && m.quiet)).slice(-5).map((m) => this._formatMessage(m, member, { maxChars: 300 })),
+      recent_for_you: this.s.messages.filter((m) => m.seq <= (member.cursor || 0) && this._relevantFor(member, m) && this._concerns(member, m)).slice(-5).map((m) => this._formatMessage(m, member, { maxChars: 300 })),
+      ...this._unreadPack(member),
     } : {};
     return {
       ...pack,
@@ -960,8 +1014,9 @@ const ACTIONS = {
     if (member) {
       // Same name again = the same agent coming back (new chat window, restarted app).
       // Not allowed while the original is clearly still active, so nobody can take over a live identity.
-      if (this.isOnline(member) && now() - member.lastSeen < 90_000) {
-        throw new RoomError(`"${member.name}" is already in the room and active. Pick a different name (e.g. "${member.name} 2"), or pass your token to reconnect.`, 409);
+      const sameApp = clientInfo?.name && member.client?.name === clientInfo.name;
+      if (!sameApp && this.isOnline(member) && now() - member.lastSeen < 90_000) {
+        throw new RoomError(`"${member.name}" is already in the room and listening. If that is you from an earlier chat, pass your token (the human can copy it with "Fresh chat" on the dashboard); otherwise pick a different name.`, 409);
       }
       member.status = 'online';
       member.lastSeen = now();
@@ -1044,7 +1099,7 @@ const ACTIONS = {
       const deliver = [];
       const skipped = [];
       for (const m of this.s.messages) {
-        if (m.seq <= actor.cursor || !this._relevantFor(actor, m)) continue;
+        if (m.seq <= actor.cursor || m.deleted || !this._relevantFor(actor, m)) continue;
         (this._concerns(actor, m) ? deliver : skipped).push(m);
       }
       return { deliver, skipped };
@@ -1058,13 +1113,20 @@ const ACTIONS = {
         ({ deliver, skipped } = await new Promise((resolve) => {
           const finish = () => {
             clearTimeout(timer);
+            clearTimeout(settle);
             this.off('change', onChange);
             this.off('closed', finish);
             signal?.removeEventListener('abort', finish);
             resolve(scan());
           };
-          // Only wake up for something that concerns this member, not for every message.
-          const onChange = (kind) => { if (kind === 'message' && scan().deliver.length) finish(); };
+          // Only wake up for something that concerns this member, not for every message; then
+          // wait a moment for the rest of a burst, so it arrives in one call instead of one by one.
+          let settle = null;
+          const onChange = (kind) => {
+            if (kind !== 'message' || settle || !scan().deliver.length) return;
+            settle = setTimeout(finish, Math.min(SETTLE_MS, Math.max(0, deadline - now())));
+          };
+          const deadline = now() + timeoutMs;
           const timer = setTimeout(finish, timeoutMs);
           this.on('change', onChange);
           this.once('closed', finish);
@@ -1167,6 +1229,60 @@ const ACTIONS = {
     list = list.slice(-Math.min(Number(limit) || 30, 200));
     this._markSeen(actor, list);
     return { messages: list.map((m) => this._formatMessage(m, actor, { maxChars: MAX_MESSAGE_CHARS })) };
+  },
+
+  /** The human deletes any message; members their own. Already-delivered copies stay with the AIs. */
+  delete_message(actor, { seq }) {
+    const m = this.s.messages.find((x) => x.seq === Number(seq));
+    if (!m || m.deleted) throw new RoomError(`No message #${seq}.`, 404);
+    if (actor.id !== HUMAN_ID && m.from !== actor.id) throw new RoomError('You can only delete your own messages.', 403);
+    m.deleted = true;
+    m.text = '';
+    delete m.attachments;
+    delete m.reactions;
+    this._changed('message');
+    return { deleted: m.seq };
+  },
+
+  /** Lead or human: fold a dead identity (e.g. "Claude 2") into the real one. */
+  merge_member(actor, { from, into }) {
+    this._leadOrHuman(actor, true);
+    const a = this.memberByName(from);
+    const b = this.memberByName(into);
+    if (!a || !b) throw new RoomError(`Need two members: "${from}" and "${into}".`);
+    if (a.id === b.id) throw new RoomError('Pick two different members.');
+    if (a.id === this.s.leadId) this.s.leadId = b.id;
+    for (const t of Object.values(this.s.tasks)) for (const k of ['from', 'to', 'owner']) if (t[k] === a.id) t[k] = b.id;
+    for (const c of Object.values(this.s.claims)) if (c.memberId === a.id) c.memberId = b.id;
+    for (const e of this.s.memory) if (e.by === a.id) e.by = b.id;
+    for (const m of this.s.messages) {
+      if (m.from === a.id) m.from = b.id;
+      if (m.to === a.id) m.to = b.id;
+    }
+    b.stats = { checks: (b.stats?.checks || 0) + (a.stats?.checks || 0), empty: (b.stats?.empty || 0) + (a.stats?.empty || 0) };
+    delete this.s.members[a.id];
+    this._log('member', actor.id, `merged ${a.name} into ${b.name}`);
+    this._system(`${a.name} was merged into ${b.name}.`, null, { quiet: true });
+    return { merged: a.name, into: b.name };
+  },
+
+  /** One compact answer to "what is mine right now?" */
+  my_work(actor) {
+    const tasks = this._tasksFor(actor).mine.map((t) => compact({ id: t.id, title: t.title, status: t.status, from: t.from, done_when: t.done_when, check: t.check, files: t.files }));
+    const lastFrom = (who) => {
+      const m = [...this.s.messages].reverse().find((x) => !x.deleted && x.from === who && (x.to === null || x.to === actor.id));
+      return m ? `#${m.seq} ${m.text.slice(0, 300)}` : undefined;
+    };
+    return compact({
+      you: actor.name,
+      rank: actor.id === this.s.leadId ? 'lead' : this._rankOf(actor).title,
+      paused: actor.paused ? `YOU are paused by ${this._nameOf(actor.paused.by)}` : this.s.paused ? 'the ROOM is paused' : 'no (formal pause is off; a message asking you to stop still counts)',
+      your_tasks: tasks.length ? tasks : 'none',
+      your_claims: Object.entries(this.s.claims).filter(([, c]) => c.memberId === actor.id).map(([f]) => f),
+      latest_from_human: lastFrom(HUMAN_ID),
+      latest_from_lead: this.s.leadId && this.s.leadId !== actor.id ? lastFrom(this.s.leadId) : undefined,
+      ...this._unreadPack(actor),
+    });
   },
 
   /** React to a message instead of replying "ok": it wakes nobody and costs no one tokens. */
@@ -1297,7 +1413,7 @@ const ACTIONS = {
     const created = targets.map((target) => {
       const t = {
         id: `T${Object.keys(this.s.tasks).length + 1}`,
-        kind: ['task', 'review', 'question', 'asset', 'research', 'fix'].includes(kind) ? kind : 'task',
+        kind: ['task', 'review', 'question', 'asset', 'research', 'fix', 'report'].includes(kind) ? kind : 'task',
         title: cleanTitle, details: cleanDetails, from: actor.id, to: target,
         status: target ? 'assigned' : 'open', owner: target || null, files: toList(files).map((f) => this.safePath(f).rel), createdAt: now(), updatedAt: now(),
         doneWhen: done_when ? cleanText(done_when, 2000, 'done_when').text : undefined,
@@ -1308,7 +1424,7 @@ const ACTIONS = {
       const who = target ? this._nameOf(target) : 'anyone';
       this._addMessage({
         from: actor.id, to: target, kind: 'task', taskId: t.id,
-        text: `[${t.id} · ${t.kind} for ${who}] ${t.title}${t.details ? `\n${t.details}` : ''}${t.files.length ? `\nFiles: ${t.files.join(', ')}` : ''}${t.doneWhen ? `\nDone when: ${t.doneWhen}` : ''}${t.check ? `\nCheck: \`${this.s.toolbox?.[t.check]?.command || t.check}\` runs automatically when you finish.` : ''}${target && ['Junior', 'Trainee'].includes(this._rankOf(this.s.members[target] || {}).title) ? '\nFollow the steps exactly, change only the files listed, and ask before guessing.' : ''}`,
+        text: `[${t.id} · ${t.kind} for ${who}] ${t.title}${t.details ? `\n${t.details}` : ''}${t.files.length ? `\nFiles: ${t.files.join(', ')}` : ''}${t.doneWhen ? `\nDone when: ${t.doneWhen}` : ''}${t.check ? (/^(manual|lead)$/i.test(t.check) ? `\nCheck: ${this._nameOf(actor.id)} verifies it by hand; say exactly how to verify it.` : `\nCheck: \`${this.s.toolbox?.[t.check]?.command || t.check}\` runs automatically when you finish.`) : ''}${target && ['Junior', 'Trainee'].includes(this._rankOf(this.s.members[target] || {}).title) ? '\nFollow the steps exactly, change only the files listed, and ask before guessing.' : ''}`,
       });
       this._log('task.created', actor.id, `asked ${who}: ${t.title}`, { task: t.id, files: t.files });
       return t;
@@ -1386,6 +1502,14 @@ const ACTIONS = {
     }
     this._log(`task.${status}`, actor.id, `${status === 'done' ? 'finished' : status} ${t.id}: ${t.title}`, { task: t.id, files: t.changes?.map((c) => c.file) });
     const owner = this.s.members[t.owner] || actor;
+    if (status === 'done' && /^(manual|lead)$/i.test(t.check || '')) {
+      t.status = 'done';
+      t.checkResult = { command: 'manual', status: 'manual' };
+      t.pendingStatus = 'done';
+      this._deliverResult(t, owner);
+      this._rankCheck(owner.id);
+      return compact({ task: this._taskInfo(t), note: `${this._nameOf(t.from)} verifies this one by hand (approve or changes).`, warning: clean?.warning });
+    }
     if (status === 'done' && t.check && this.s.settings.commands !== 'off') {
       t.status = 'checking';
       t.pendingStatus = 'done';
@@ -1513,7 +1637,23 @@ const ACTIONS = {
     };
   },
 
-  claim_file(actor, { path: p, note }) {
+  claim_file(actor, { path: p, paths, note }) {
+    if (!p && !paths) return { claims: Object.entries(this.s.claims).map(([f, c]) => `${f}: ${this._nameOf(c.memberId)}${c.note ? ` (${c.note})` : ''}`) };
+    if (paths || /[*?]/.test(String(p))) {
+      const files = this._expandPaths(paths || p);
+      if (!files.length) throw new RoomError('No project files match.');
+      const claimed = [];
+      const busy = [];
+      for (const rel of files) {
+        const c = this.s.claims[rel];
+        if (c && c.memberId !== actor.id && actor.id !== HUMAN_ID) { busy.push(`${rel} (${this._nameOf(c.memberId)})`); continue; }
+        this.s.claims[rel] = { memberId: actor.id, ts: now(), note: note ? String(note).slice(0, 200) : '' };
+        claimed.push(rel);
+      }
+      if (claimed.length) this._system(`${this._nameOf(actor.id)} is editing ${claimed.length} file(s)${note ? ` (${note})` : ''}: ${claimed.slice(0, 8).join(', ')}${claimed.length > 8 ? '…' : ''}.`, null, { quiet: true });
+      this._changed('claim');
+      return compact({ claimed, busy: busy.length ? busy : undefined, note: busy.length ? 'Some files are being edited by others: coordinate before touching them.' : 'Release them with release when you are done.' });
+    }
     const { rel } = this.safePath(p);
     this._checkClaim(actor, rel);
     this.s.claims[rel] = { memberId: actor.id, ts: now(), note: note ? String(note).slice(0, 200) : '' };
@@ -1521,7 +1661,16 @@ const ACTIONS = {
     return { claimed: rel, note: 'Release it with release_file when you are done.' };
   },
 
-  release_file(actor, { path: p }) {
+  release_file(actor, { path: p, paths }) {
+    if (paths || /[*?]/.test(String(p))) {
+      const released = [];
+      for (const rel of this._expandPaths(paths || p)) {
+        const c = this.s.claims[rel];
+        if (c && (c.memberId === actor.id || actor.id === HUMAN_ID || actor.id === this.s.leadId)) { delete this.s.claims[rel]; released.push(rel); }
+      }
+      this._changed('claim');
+      return { released };
+    }
     const { rel } = this.safePath(p);
     const c = this.s.claims[rel];
     if (!c) return { released: rel, note: 'was not claimed' };
@@ -1745,7 +1894,7 @@ const ACTIONS = {
     return { removed: m.name };
   },
 
-  update_settings(actor, { commands, leadAwayMinutes, readUsage, humanName, rules, knowledge }) {
+  update_settings(actor, { commands, leadAwayMinutes, readUsage, humanName, rules, knowledge, idle }) {
     if (actor.id !== HUMAN_ID) throw new RoomError('Only the human can change room settings.', 403);
     if (humanName !== undefined) {
       const name = String(humanName || '').trim().replace(/^@/, '').replace(/\s+/g, ' ').slice(0, 32);
@@ -1756,6 +1905,10 @@ const ACTIONS = {
       }
     }
     if (knowledge !== undefined) this._setKnowledge(knowledge);
+    if (idle !== undefined && ['listen', 'rest'].includes(idle) && idle !== this.s.settings.idle) {
+      this.s.settings.idle = idle;
+      this._system(idle === 'listen' ? 'When there is nothing to do, keep waiting for updates (do not end your turn): the human wants you reachable.' : 'When there is nothing to do for a while, end your turn to save tokens; the human will call you back.');
+    }
     if (rules !== undefined) {
       const before = Object.fromEntries(Object.values(this.s.members).map((m) => [m.id, this._rulesFor(m).join('\n')]));
       this.s.settings.rules = cleanText(String(rules || ''), 4000, 'Rules').text;
@@ -1906,10 +2059,18 @@ const ACTIONS = {
 
   // ----- shared files: images, documents, anything one AI makes for another -----
 
-  async share_file(actor, { path: p, url, base64, text, name, mime, message, to }) {
+  async share_file(actor, { path: p, url, base64, text, name, mime, message, to, allowOutside = false }) {
     let buffer;
     let projectPath;
-    if (p) {
+    const outside = p && allowOutside === true && path.isAbsolute(String(p)) && path.relative(this.projectRoot, String(p)).startsWith('..');
+    if (outside) {
+      // A local app sharing a log or scratch file from elsewhere on this computer.
+      const abs = path.resolve(String(p));
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new RoomError(`${abs} does not exist.`, 404);
+      if (fs.statSync(abs).size > MAX_ASSET_BYTES) throw new RoomError('That file is too big to share.');
+      buffer = fs.readFileSync(abs);
+      name ||= path.basename(abs);
+    } else if (p) {
       const { abs, rel } = this.safePath(p);
       if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) throw new RoomError(`${rel} does not exist in the project.`, 404);
       buffer = fs.readFileSync(abs);
@@ -1983,12 +2144,12 @@ const ACTIONS = {
 
 export const RULES = [
   'You keep all your own tools, memory and knowledge. Use them freely; the room is for teamwork.',
-  'Work in a loop: wait for updates -> act -> report -> wait again. Keep going while there is work.',
+  'Work in a loop: wait for updates -> act -> report -> wait again. Do not end your turn while the room is active (long waits are cheap) unless the human or a "next:" line tells you to rest.',
   'The lead plans, splits work into small tasks (with "done when" and a check) and reviews results; the lower a member\'s rank, the more detailed the instructions. Members do their tasks and review each other. Ask anyone for what only they can do (images, web search, running code, a second opinion).',
   'Unclear task? Ask the asker before guessing. Check "team now" and claims so you never redo or overwrite someone else\'s work; taking a task reserves its files.',
   'Be strictly honest: never invent facts, files, APIs or results; say "I don\'t know" or "I didn\'t verify" when that is the truth. Do not agree to be nice: if a plan, review or claim is wrong, say so plainly and why. Reviews must be real.',
   'Before saying done, verify (run the task\'s check or the tests) and say how you verified. Report with update_task done and a clear result. You are ranked by your results (checks, reviews, ratings), up or down.',
-  'Share what you learn: memory remember for facts teammates need, toolbox add for useful commands.',
+  'Share what you learn: memory remember for facts teammates need, toolbox add for useful commands. Need a file from the human (log, screenshot)? Ask them to drop it on the dashboard.',
   'React with an emoji (send_message react_to) instead of replying "ok": it costs nobody tokens. Keep messages short.',
   'When your conversation gets long or your app warns about context: save a checkpoint (update_me), then ask the human to /compact or open a fresh chat; rejoin with your token.',
   'If the lead is away, finish your tasks, report, then wait. If the room is paused, finish your step and wait.',
@@ -2031,7 +2192,8 @@ function guidance(room, actor, lead, msgs, tasks, queued = 0, { timeoutMs = 0 } 
     if (orphans.length) g += ` ${orphans.map((t) => `${t.id} (${room._nameOf(t.owner || t.to)})`).join(', ')} ${orphans.length > 1 ? 'are' : 'is'} stuck with someone away or disconnected: reassign (ask_member with to "auto").`;
   }
   // Polling costs tokens: every check makes the app reread its whole conversation.
-  if (!msgs.length && !tasks.mine.length && (actor._empty || 0) >= REST_AFTER && timeoutMs < 120_000) {
+  const canRest = actor.via === 'cli' || room.s.settings.idle === 'rest';
+  if (canRest && !msgs.length && !tasks.mine.length && (actor._empty || 0) >= REST_AFTER && timeoutMs < 120_000) {
     return (actor.via === 'cli'
       ? `Nothing is happening. To save tokens, run \`crewroom wait --as ${/\s/.test(actor.name) ? `"${actor.name}"` : actor.name} --timeout 3600\` as a background command if your app can (it wakes you when something concerns you), and end your turn.`
       : actor.via === 'mcp (local)'

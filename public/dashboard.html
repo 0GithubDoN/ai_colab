@@ -86,6 +86,11 @@
   .react-pick { position: absolute; top: -6px; right: 22px; z-index: 11; display: flex; gap: 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow); padding: 3px 5px; }
   .react-pick button { border: 0; background: none; font-size: 17px; padding: 2px 4px; border-radius: 8px; }
   .react-pick button:hover { background: var(--panel-2); }
+  .msg-del { position: absolute; top: 18px; right: 22px; opacity: 0; padding: 1px 6px; border-radius: 999px; font-size: 12px; }
+  .msg:hover .msg-del { opacity: .8; }
+  .msg.deleted .body { font-style: italic; color: var(--faint); box-shadow: none; background: transparent; }
+  #chatSearch { width: 170px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); font-size: 12.5px; }
+  .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 30; background: var(--panel); border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); color: var(--text); border-radius: 12px; padding: 9px 14px; box-shadow: var(--shadow); font-size: 13px; max-width: min(560px, 92vw); }
   /* in a run of messages from one author, only the last one shows it */
   .msg:has(+ .msg.cont) .seen { display: none; }
   .avatar img { width: 100%; height: 100%; border-radius: 50%; display: block; }
@@ -330,6 +335,7 @@
       <button class="chip" data-filter="tasks">Tasks</button>
       <button class="chip" data-filter="updates">Updates</button>
       <span class="spacer"></span>
+      <input type="search" id="chatSearch" placeholder="Search chat…" aria-label="Search chat">
       <span class="faint" id="msgCount" style="font-size:12px"></span>
       <span class="faint" id="chapterInfo" style="font-size:12px"></span>
       <button class="small" id="chapterBtn" title="Archive this chat and continue from a summary. AIs are asked to save a checkpoint and move to a fresh conversation, which cuts their token use.">📖 New chapter</button>
@@ -340,7 +346,8 @@
     <form class="composer" id="composer">
       <select id="to" aria-label="Send to"><option value="">Everyone</option></select>
       <textarea id="text" rows="1" placeholder="Message the team…  @ to mention · Shift+Enter for a new line"></textarea>
-      <button class="ghost" type="button" id="attachBtn" title="Share a file">📎</button>
+      <button class="ghost" type="button" id="attachBtn" title="Share a file (or drop it anywhere on the page)">📎</button>
+      <button class="ghost" type="button" id="reportBtn" title="Test report for the lead: what worked, what failed, screenshots">🧪</button>
       <button class="primary" type="submit">Send</button>
     </form>
     <input type="file" id="fileInput" multiple hidden>
@@ -424,8 +431,19 @@
   <select id="taskKind"><option>task</option><option>review</option><option>fix</option><option>asset</option><option>research</option><option>question</option></select>
   <label for="taskDetails">Details (optional)</label><textarea id="taskDetails"></textarea>
   <label for="taskDone">Done when (optional)</label><input type="text" id="taskDone" placeholder="e.g. the toggle works and has a test">
-  <label for="taskCheck">Check that runs when it's finished (optional)</label><input type="text" id="taskCheck" placeholder="e.g. npm test, or a toolbox name">
+  <label for="taskCheck">Check that runs when it's finished (optional)</label><input type="text" id="taskCheck" placeholder="e.g. npm test, a toolbox name, or manual">
   <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Create</button></div>
+</form></dialog>
+
+<dialog id="reportDlg"><form method="dialog" id="reportForm">
+  <h2>Test report</h2>
+  <div class="muted" style="font-size:13px">Becomes a task for the lead, with your files attached.</div>
+  <label for="repTitle">What did you test?</label><input type="text" id="repTitle" required placeholder="e.g. Quest 3 on the live server">
+  <label for="repOk">What worked</label><textarea id="repOk" rows="3" placeholder="One per line"></textarea>
+  <label for="repBad">What failed</label><textarea id="repBad" rows="4" placeholder="One per line: what you did, what happened, what you expected"></textarea>
+  <label for="repNotes">Notes (optional)</label><textarea id="repNotes" rows="2"></textarea>
+  <label for="repFiles">Screenshots, logs (optional)</label><input type="file" id="repFiles" multiple>
+  <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Send to the lead</button></div>
 </form></dialog>
 
 <dialog id="diffDlg" style="width:min(1000px,94vw)">
@@ -460,6 +478,8 @@
   </select>
   <label for="setAway">Treat the lead as away after this many quiet minutes</label>
   <input type="number" id="setAway" min="1" max="240">
+  <label for="setIdle">When an AI has nothing to do</label>
+  <select id="setIdle"><option value="listen">Keep listening: answers you right away (each check costs a little)</option><option value="rest">Rest: cheapest, but you nudge it in its app when needed</option></select>
   <label class="check"><input type="checkbox" id="setUsage"> Show token usage from Claude Code and Codex logs on this computer (read locally, never sent anywhere)</label>
   <label for="setName">Your name (the AIs address you by it instead of “human”)</label>
   <input type="text" id="setName" maxlength="32" placeholder="e.g. Lucian">
@@ -537,7 +557,9 @@ function connect() {
 
 // ---------------- feed ----------------
 
-const matches = (m) => filter === 'all' || (filter === 'chat' && (m.kind === 'chat')) || (filter === 'tasks' && (m.kind === 'task' || m.kind === 'result')) || (filter === 'updates' && m.kind === 'system');
+const searchQ = () => ($('chatSearch')?.value || '').trim().toLowerCase();
+const matches = (m) => (!searchQ() || `${m.from} ${m.to} ${m.text}`.toLowerCase().includes(searchQ())) && matchesFilter(m);
+const matchesFilter = (m) => filter === 'all' || (filter === 'chat' && (m.kind === 'chat')) || (filter === 'tasks' && (m.kind === 'task' || m.kind === 'result')) || (filter === 'updates' && m.kind === 'system');
 
 function renderFeed(scrollToEnd) {
   const feed = $('feed');
@@ -588,6 +610,12 @@ function updateMeta(meta) {
     if (!m) continue;
     m.seenBy = u.seenBy || undefined;
     m.reactions = u.reactions || undefined;
+    if (u.deleted && !m.deleted) {
+      m.deleted = true;
+      const old = document.querySelector(`#feed .msg[data-seq="${seq}"]`);
+      if (old) old.replaceWith(messageNode(m));
+      continue;
+    }
     const col = document.querySelector(`#feed .msg[data-seq="${seq}"] .col`);
     if (!col) continue;
     col.querySelector('.reacts')?.remove();
@@ -626,13 +654,20 @@ function messageNode(m) {
   wrap.className = ['msg', m.kind, m.fromId === 'human' ? 'human' : 'ai', m.toId ? 'dm' : '', cont ? 'cont' : ''].join(' ');
   if (m.fromId !== 'human') wrap.style.setProperty('--ai', colorOf(m.from));
   // Long messages start folded so the chat stays readable; one click shows everything.
+  if (m.deleted) {
+    wrap.className = 'msg deleted';
+    wrap.dataset.seq = m.seq;
+    lastAuthor = null;
+    wrap.innerHTML = `${avatar(m.fromId === 'human' ? 'You' : m.from)}<div class="col"><div class="head"><span class="who">${esc(m.fromId === 'human' ? 'You' : m.from)}</span></div><div class="body">message deleted</div></div>`;
+    return wrap;
+  }
   // The review hint is for the AIs; the dashboard has buttons for that.
   m = { ...m, text: m.text.replace(/\n\(Review it: update_task review[^)]*\)$/, '') };
   const long = m.text.length > 700 || m.text.split('\n').length > 12;
   const att = (m.attachments || []).map((a) => a.mime.startsWith('image/') ? `<a href="${a.url}" target="_blank" rel="noopener"><img src="${a.url}" alt="${esc(a.name)}"></a>` : `<a href="${a.url}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join('');
   wrap.innerHTML = `${avatar(from)}<div class="col">
     <div class="head"><span class="who" style="color:${m.fromId === 'human' ? 'var(--text)' : colorOf(m.from)}">${esc(from)}</span>${m.to !== 'everyone' ? `<span>→ ${esc(m.toId === 'human' ? 'you' : m.to)}</span>` : ''}${m.task_id ? `<span class="tag">${m.task_id}</span>` : ''}<span class="faint">${new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
-    <div class="body">${long ? `<div class="txt clamp">${linkify(esc(m.text))}</div><button class="more-btn" type="button">Show more ▾</button>` : linkify(esc(m.text))}${att ? `<div class="att">${att}</div>` : ''}</div><button type="button" class="react-add ghost" data-react-pick="${m.seq}" title="React">☺</button>${reactsHtml(m)}${seenHtml(m)}</div>`;
+    <div class="body">${long ? `<div class="txt clamp">${linkify(esc(m.text))}</div><button class="more-btn" type="button">Show more ▾</button>` : linkify(esc(m.text))}${att ? `<div class="att">${att}</div>` : ''}</div><button type="button" class="react-add ghost" data-react-pick="${m.seq}" title="React">☺</button><button type="button" class="msg-del ghost" data-del="${m.seq}" title="Delete message">🗑</button>${reactsHtml(m)}${seenHtml(m)}</div>`;
   wrap.dataset.seq = m.seq;
   return wrap;
 }
@@ -685,7 +720,7 @@ function memberCard(m) {
       <div class="row"><span>Rank</span><select class="small" data-rank="${esc(m.name)}">${['auto', 'senior', 'mid', 'junior', 'trainee'].map((r) => `<option value="${r}" ${(m.rank?.manual ? m.rank.title.toLowerCase() : 'auto') === r ? 'selected' : ''}>${r === 'auto' ? `earned (${m.rank?.manual ? 'auto' : m.rank?.title || '—'})` : r}</option>`).join('')}</select></div>
       <div class="row"><span>Receives</span><span class="seg"><button class="${m.listen === 'focus' ? 'on' : ''}" data-focus="focus" data-name="${esc(m.name)}" title="Only what concerns it (saves tokens)">focus</button><button class="${m.listen === 'all' ? 'on' : ''}" data-focus="all" data-name="${esc(m.name)}" title="Every message">all</button></span></div>
       <div class="row"><button class="small" data-mention="${esc(m.name)}">@ Mention</button><button class="small" data-dm="${esc(m.name)}">Direct message</button><button class="small" data-fresh="${esc(m.name)}" title="Move it to a new conversation without losing context (saves tokens)">↻ Fresh chat</button>${m.role !== 'lead' ? `<button class="small" data-lead="${esc(m.name)}">Make lead</button>` : ''}</div>
-      <div class="row">${m.paused ? `<button class="small primary" data-control="resume" data-name="${esc(m.name)}">▶ Resume</button>` : `<button class="small" data-control="pause" data-name="${esc(m.name)}">⏸ Pause</button><button class="small danger" data-control="stop" data-name="${esc(m.name)}" title="Pause it, free its files and reopen its tasks">■ Stop</button>`}<button class="small danger" data-kick="${esc(m.name)}">Remove</button></div>
+      <div class="row">${m.paused ? `<button class="small primary" data-control="resume" data-name="${esc(m.name)}">▶ Resume</button>` : `<button class="small" data-control="pause" data-name="${esc(m.name)}">⏸ Pause</button><button class="small danger" data-control="stop" data-name="${esc(m.name)}" title="Pause it, free its files and reopen its tasks">■ Stop</button>`}<button class="small" data-merge="${esc(m.name)}" title="Fold this (e.g. a dead duplicate) into another member">Merge…</button><button class="small danger" data-kick="${esc(m.name)}">Remove</button></div>
     </div>
   </div>`;
 }
@@ -774,7 +809,7 @@ function render() {
     const c = t.check_result;
     if (!c && !t.check) return '';
     const st = c?.status || 'when finished';
-    const label = { passed: '✓ check passed', failed: '✗ check failed', running: '⏳ checking…', 'waiting for approval': '⏳ check waiting for your OK', denied: 'check denied', skipped: 'check skipped', interrupted: 'check interrupted' }[st] || `check ${st}`;
+    const label = { manual: '🔎 verified by hand (review it)', passed: '✓ check passed', failed: '✗ check failed', running: '⏳ checking…', 'waiting for approval': '⏳ check waiting for your OK', denied: 'check denied', skipped: 'check skipped', interrupted: 'check interrupted' }[st] || `check ${st}`;
     return `<div class="chk ${st.split(' ')[0]}">${label}<code style="font-size:11px">${esc(c?.command || t.check)}</code>${c?.output ? `<details><summary class="faint">output</summary><div class="diff" style="max-height:200px">${esc(c.output)}</div></details>` : ''}</div>`;
   };
   const taskCard = (t) => `<div class="card"><div class="row"><span class="st ${t.status}">${TASK_LABEL[t.status] || t.status}</span><span class="faint" style="font-size:12px">${t.id} · ${esc(t.kind)}${t.rework ? ` · reworked ${t.rework}×` : ''}</span>${t.review ? `<span class="spacer"></span><span style="font-size:11.5px;color:${t.review.verdict === 'approve' ? 'var(--ok)' : 'var(--warn)'}">${t.review.verdict === 'approve' ? `approved${t.review.rating ? ` ${'★'.repeat(t.review.rating)}` : ''}` : 'changes asked'} · ${esc(t.review.by)}</span>` : ''}</div>
@@ -815,9 +850,54 @@ $('composer').addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = $('text').value.trim();
   if (!text) return;
-  await act('send', { text, to: $('to').value || undefined });
+  const to = $('to').value || undefined;
+  await act('send', { text, to });
   $('text').value = '';
   autoGrow();
+  warnNotListening(text, to);
+});
+// An AI whose turn has ended only sees this when it next checks: say so, so you can nudge it.
+function warnNotListening(text, to) {
+  const names = new Set(to ? [to] : []);
+  for (const mm of text.matchAll(/@([\w.-]+)/g)) {
+    const m = state.members.find((x) => x.name.toLowerCase() === mm[1].toLowerCase());
+    if (m) names.add(m.name);
+    if (/^(everyone|all)$/i.test(mm[1])) state.members.forEach((x) => names.add(x.name));
+  }
+  const away = [...names].map(memberByName).filter((m) => m && !['listening', 'working'].includes(m.status));
+  if (!away.length) return;
+  toast(`${away.map((m) => m.name).join(', ')} ${away.length > 1 ? "aren't" : "isn't"} listening right now (last contact ${away.map((m) => ago(m.lastSeen)).join(', ')}). ${away.length > 1 ? 'They' : 'It'} will see this on the next check; to wake ${away.length > 1 ? 'them' : 'it'} now, nudge ${away.length > 1 ? 'them' : 'it'} in ${away.length > 1 ? 'their apps' : `${away[0].app}`} ("check the room").`);
+}
+let toastTimer = null;
+function toast(text) {
+  document.querySelector('.toast')?.remove();
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = text;
+  t.onclick = () => t.remove();
+  document.body.appendChild(t);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.remove(), 9000);
+}
+$('chatSearch').addEventListener('input', () => renderFeed(false));
+$('reportBtn').onclick = () => { $('reportForm').reset(); $('reportDlg').showModal(); };
+$('reportDlg').addEventListener('close', async () => {
+  if ($('reportDlg').returnValue !== 'ok' || !$('repTitle').value.trim()) return;
+  const files = [];
+  for (const f of $('repFiles').files) {
+    const r = await fetch(`${base}/upload?silent=1&name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'x-admin-key': KEY, 'content-type': f.type || 'application/octet-stream' }, body: f }).then((x) => x.json());
+    if (r.asset) files.push(`${r.asset.id} ${r.asset.name}`);
+  }
+  const lines = (v, mark) => v.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => `${mark} ${l}`).join('\n');
+  const details = [
+    $('repOk').value.trim() && `Worked:\n${lines($('repOk').value, '✓')}`,
+    $('repBad').value.trim() && `Failed:\n${lines($('repBad').value, '✗')}`,
+    $('repNotes').value.trim() && `Notes: ${$('repNotes').value.trim()}`,
+    files.length && `Files (open with get_asset): ${files.join(', ')}`,
+  ].filter(Boolean).join('\n\n');
+  const lead = state.members.find((m) => m.role === 'lead');
+  await act('ask', { to: lead?.name, kind: 'report', title: `Test report: ${$('repTitle').value.trim()}`, details, done_when: 'every failed item is fixed or explained' });
+  toast(`Sent to ${lead?.name || 'the team'} as a task.`);
 });
 const autoGrow = () => { const t = $('text'); t.style.height = 'auto'; t.style.height = `${Math.min(t.scrollHeight, 200)}px`; };
 $('text').addEventListener('input', autoGrow);
@@ -968,6 +1048,7 @@ $('freshCopy').onclick = async () => {
 $('settingsBtn').onclick = () => {
   const st = state.settings;
   $('setCommands').value = st.commands; $('setAway').value = st.leadAwayMinutes; $('setUsage').checked = st.readUsage !== false;
+  $('setIdle').value = st.idle || 'listen';
   $('setName').value = st.humanName || ''; $('setRules').value = st.rules || ''; $('setKnowledge').value = (st.knowledge || []).join(', ');
   $('settingsDlg').showModal();
 };
@@ -975,7 +1056,7 @@ $('settingsDlg').addEventListener('close', () => {
   if ($('settingsDlg').returnValue !== 'ok') return;
   act('update_settings', {
     commands: $('setCommands').value, leadAwayMinutes: Number($('setAway').value), readUsage: $('setUsage').checked,
-    humanName: $('setName').value.trim(), rules: $('setRules').value, knowledge: $('setKnowledge').value.split(',').map((x) => x.trim()).filter(Boolean),
+    humanName: $('setName').value.trim(), idle: $('setIdle').value, rules: $('setRules').value, knowledge: $('setKnowledge').value.split(',').map((x) => x.trim()).filter(Boolean),
   });
 });
 $('newTaskBtn').onclick = () => { $('taskForm').reset(); $('taskDlg').showModal(); };
@@ -1024,6 +1105,11 @@ document.addEventListener('click', (e) => {
   if (b.dataset.dm) { $('to').value = b.dataset.dm; $('text').focus(); }
   if (b.dataset.fresh) openFresh(b.dataset.fresh);
   if (b.dataset.diff) openDiff(b.dataset.diff);
+  if (b.dataset.del && confirm('Delete this message for everyone? (AIs that already read it keep their copy.)')) act('delete_message', { seq: Number(b.dataset.del) });
+  if (b.dataset.merge) {
+    const into = prompt(`Merge ${b.dataset.merge} into which member? Its tasks, claims and messages move there and ${b.dataset.merge} is removed.`, '');
+    if (into) act('merge_member', { from: b.dataset.merge, into: into.trim() });
+  }
   if (b.dataset.review) {
     const verdict = b.dataset.verdict;
     if (verdict === 'approve') {
