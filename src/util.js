@@ -15,6 +15,11 @@ export const DEFAULT_PORT = 7777;
 export const PROJECT_DIR = '.crewroom';
 
 /** Global folder for the hub (~/.crewroom). Override with CREWROOM_HOME. */
+/** Where the CLI keeps an agent's token for a room (so `--as Name` works in a terminal). */
+export function identityPath(home, code, name) {
+  return path.join(home, 'agents', code, `${String(name).toLowerCase().replace(/[^a-z0-9_-]+/g, '_')}.json`);
+}
+
 export function homeDir() {
   const dir = process.env.CREWROOM_HOME || path.join(os.homedir(), '.crewroom');
   fs.mkdirSync(dir, { recursive: true });

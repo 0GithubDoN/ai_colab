@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { homeDir, readJson, writeJson, normalizeCode, openInBrowser, VERSION, CLI_PATH } from '../src/util.js';
+import { homeDir, readJson, writeJson, normalizeCode, openInBrowser, VERSION, CLI_PATH, identityPath } from '../src/util.js';
 import { ensureHub, runningHub, hubApi, findProjectRoot } from '../src/client.js';
 import { formatWait, formatMessage as fmtMsg, formatTask } from '../src/format.js';
 
@@ -69,6 +69,10 @@ FOR AI AGENTS WITH A TERMINAL (run in the project folder)
   crewroom me --as Claude [--avatar lorelei:sunny] [--model "..."] [--focus all|focus] ["activity"]
   crewroom checkpoint --as Claude "doing X; next Y"   saved for when you rejoin in a fresh conversation
   crewroom react --as Claude 12 👍                    acknowledge message #12 without a reply (free)
+  crewroom now --as Claude                            my tasks, claims, unread, latest from the human/lead
+  crewroom claim --as Codex "locale/*/*.txt" a.js     several files or globs at once; no args = list claims
+  crewroom delete --as Claude 12                      delete your own message
+  crewroom merge --as Claude "Claude 2" Claude        (lead) fold a dead duplicate into the real member
   crewroom ask ... --done-when "tests pass" --check "npm test" [--difficulty easy|normal|hard]
   crewroom review --as Claude T3 approve|changes [--rating 4] ["note"]   crewroom diff --as Claude T3
   crewroom log --as Claude [Codex | T3 | src/app.js]   the team ledger: who did what
@@ -92,9 +96,13 @@ ADVANCED
                                 to the dashboard (set up by "crewroom connect claude-code")
 `;
 
+class CliExit extends Error {}
+// No process.exit(): on Windows it can trip a libuv assertion while fetch sockets are closing.
+// Set the exit code and unwind; Node exits on its own when nothing is left to do.
 function die(msg) {
   console.error(`crewroom: ${msg}`);
-  process.exit(1);
+  process.exitCode = 1;
+  throw new CliExit(msg);
 }
 
 // ---------------- room connection for agent commands ----------------
@@ -113,7 +121,7 @@ async function roomConnection(flags) {
   return { base: `http://127.0.0.1:${hub.port}/r/${links.code}`, code: links.code, root, hub, links };
 }
 
-const identityFile = (code, name) => path.join(homeDir(), 'agents', code, `${String(name).toLowerCase().replace(/[^a-z0-9_-]+/g, '_')}.json`);
+const identityFile = (code, name) => identityPath(homeDir(), code, name);
 
 function tokenFor(flags, conn) {
   if (flags.token) return flags.token;
@@ -452,9 +460,17 @@ async function main() {
     case 'status':
       return out(await call('status', {}));
     case 'claim':
-      return out(await call('claim_file', { path: pos[0], note: flags.note }));
+      if (!pos.length) return out(await call('claim_file', {}));
+      return out(await call('claim_file', pos.length > 1 ? { paths: pos, note: flags.note } : { path: pos[0], note: flags.note }));
     case 'release':
-      return out(await call('release_file', { path: pos[0] }));
+      return out(await call('release_file', pos.length > 1 ? { paths: pos } : { path: pos[0] }));
+    case 'now':
+      return out(await call('my_work', {}));
+    case 'delete':
+      return out(await call('delete_message', { seq: Number(String(pos[0] || '').replace('#', '')) }));
+    case 'merge':
+      if (pos.length < 2) die('Usage: crewroom merge --as <lead> "Claude 2" Claude   (folds the first into the second)');
+      return out(await call('merge_member', { from: pos[0], into: pos[1] }));
     case 'note':
       return out(await call('note', { text: await longText(text), kind: flags.decision ? 'decision' : 'note' }));
     case 'notes':
@@ -555,4 +571,8 @@ async function main() {
   }
 }
 
-main().catch((err) => die(err.message));
+main().catch((err) => {
+  if (err instanceof CliExit) return;
+  console.error(`crewroom: ${err.message}`);
+  process.exitCode = 1;
+});

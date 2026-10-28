@@ -133,6 +133,9 @@ test('only the lead or the human can do lead things', async () => {
 test('an active member name cannot be taken over; an inactive one can rejoin', async () => {
   const { room, members: [a] } = await setup('Claude');
   await assert.rejects(room.call('join', null, { name: 'claude' }), /already in the room/);
+  // The same app coming back (new chat, restarted app) takes its seat back instead of "Claude 2".
+  a.client = { name: 'claude-code' };
+  assert.equal((await room.call('join', null, { name: 'Claude', client: { name: 'claude-code' } })).your_token, a.token);
   a.lastSeen = Date.now() - 10 * 60_000;
   const r = await room.call('join', null, { name: 'Claude', app: 'new chat' });
   assert.equal(r.your_token, a.token);
@@ -203,7 +206,8 @@ test('focus mode: members get what concerns them, chatter becomes a count; the l
   assert.ok(b.traffic.saved > 0, 'skipped chatter counts as saved');
   const l = await room.call('wait', lead, { timeout_seconds: 0 });
   assert.ok(l.new_messages.some((m) => m.text === 'general chatter from Codex'));
-  assert.ok(l.new_messages.some((m) => /is editing index.js/.test(m.text)));
+  // Routine notices (someone is editing a file) never wake anyone, not even the lead.
+  assert.ok(!l.new_messages.some((m) => /is editing index.js/.test(m.text)));
   await room.call('set_focus', b, { mode: 'all' });
   await room.call('send', c, { text: 'more chatter' });
   assert.equal((await room.call('wait', b, { timeout_seconds: 0 })).new_messages.at(-1).text, 'more chatter');
@@ -223,7 +227,7 @@ test('a focus member is not woken by chatter, only by something that concerns it
 });
 
 test('wait delivers at most 25 messages at a time and trims long ones', async () => {
-  const { room, members: [, b] } = await setup('Claude', 'Gemini');
+  const { room, members: [, b, c] } = await setup('Claude', 'Gemini', 'Codex');
   for (let i = 0; i < 30; i++) await room.call('send', HUMAN, { text: `m${i}` });
   const first = await room.call('wait', b, { timeout_seconds: 0 });
   assert.equal(first.new_messages.length, 25);
@@ -232,10 +236,14 @@ test('wait delivers at most 25 messages at a time and trims long ones', async ()
   const second = await room.call('wait', b, { timeout_seconds: 0 });
   assert.deepEqual(second.new_messages.map((m) => m.text), ['m25', 'm26', 'm27', 'm28', 'm29']);
 
+  // Chatter is trimmed; what matters to you (the human, the lead, direct, @you, your tasks) is not.
+  await room.call('set_focus', b, { mode: 'all' });
   const long = 'x'.repeat(3000);
-  const { seq } = await room.call('send', HUMAN, { text: long });
+  const { seq } = await room.call('send', c, { text: long });
+  await room.call('send', HUMAN, { text: `y${long}` });
   const w = await room.call('wait', b, { timeout_seconds: 0 });
   assert.match(w.new_messages[0].text, /read_message \d+ for the rest/);
+  assert.equal(w.new_messages[1].text, `y${long}`);
   assert.equal((await room.call('read_message', b, { seq })).message.text, long);
   room.close();
 });
@@ -685,4 +693,71 @@ test('context warnings ride along once: from app logs, or after many checks in o
   assert.match(r.context_warning, /80% full: save a checkpoint.*ask Lucian to run \/compact or open a fresh chat/);
   await room.call('send', claude, { text: '@ChatGPT and another' });
   assert.equal((await room.call('wait', gpt, { timeout_seconds: 0 })).context_warning, undefined);
+});
+
+test('a burst of messages arrives in one call; routine notices wake nobody', async () => {
+  const { room, members: [claude, gpt, gemini] } = await setup('Claude', 'ChatGPT', 'Gemini');
+  const pending = room.call('wait', claude, { timeout_seconds: 10 });
+  await new Promise((r) => setTimeout(r, 50));
+  await room.call('send', gpt, { text: 'one' });
+  await new Promise((r) => setTimeout(r, 100));
+  await room.call('send', gemini, { text: 'two' });
+  await room.call('join', null, { token: gpt.token }); // "reconnected": quiet
+  const r = await pending;
+  assert.deepEqual(r.new_messages.map((m) => m.text), ['one', 'two']);
+});
+
+test('claims: several files and globs at once, a list, and release by glob', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  for (const l of ['en', 'fr', 'de']) {
+    fs.mkdirSync(path.join(room.projectRoot, 'locale', l), { recursive: true });
+    fs.writeFileSync(path.join(room.projectRoot, 'locale', l, 'quest.txt'), 'x');
+  }
+  await room.call('claim_file', claude, { path: 'locale/fr/quest.txt' });
+  const r = await room.call('claim_file', gpt, { paths: ['locale/*/quest.txt', 'index.js'] });
+  assert.deepEqual(r.claimed.sort(), ['index.js', 'locale/de/quest.txt', 'locale/en/quest.txt']);
+  assert.deepEqual(r.busy, ['locale/fr/quest.txt (Claude)']);
+  assert.equal((await room.call('claim_file', gpt, {})).claims.length, 4);
+  assert.equal((await room.call('release_file', gpt, { path: 'locale/**' })).released.length, 2);
+});
+
+test('manual check, my work now, unread on rejoin, delete and merge', async () => {
+  const { room, members: [claude, gpt] } = await setup('Claude', 'ChatGPT');
+  const { task } = await room.call('ask', claude, { to: 'ChatGPT', title: 'Deploy to the VPS', check: 'manual' });
+  assert.match(room.s.messages.at(-1).text, /Claude verifies it by hand/);
+  await room.call('take_task', gpt, { task_id: task.id });
+  const f = await room.call('finish_task', gpt, { task_id: task.id, result: 'deployed' });
+  assert.match(f.note, /verifies this one by hand/);
+  assert.equal(room.s.tasks[task.id].checkResult.status, 'manual');
+  assert.match((await room.call('wait', claude, { timeout_seconds: 0 })).new_messages.at(-1).text, /Needs manual verification/);
+
+  await room.call('send', HUMAN, { text: 'Everyone pause please' });
+  const now = await room.call('my_work', gpt);
+  assert.match(now.latest_from_human, /Everyone pause please/);
+  assert.match(now.paused, /formal pause is off/);
+  assert.match(now.unread_for_you, /unread/);
+  const back = await room.call('join', null, { token: gpt.token });
+  assert.ok(back.unread_preview.some((x) => /Everyone pause please/.test(x)));
+  assert.equal(back.latest_seq, room.s.seq);
+
+  const { seq } = await room.call('send', gpt, { text: 'oops wrong room' });
+  await assert.rejects(room.call('delete_message', claude, { seq }), /only delete your own/);
+  await room.call('delete_message', gpt, { seq });
+  assert.equal(room.dashboardMessages().find((m) => m.seq === seq).deleted, true);
+  assert.ok(!(await room.call('wait', claude, { timeout_seconds: 0 })).new_messages.some((m) => m.seq === seq));
+
+  const dup = room.memberByToken((await room.call('join', null, { name: 'ChatGPT 2' })).your_token);
+  await room.call('claim_file', dup, { path: 'index.js' });
+  await room.call('merge_member', HUMAN, { from: 'ChatGPT 2', into: 'ChatGPT' });
+  assert.equal(room.memberByName('ChatGPT 2'), null);
+  assert.equal(room.s.claims['index.js'].memberId, gpt.id);
+});
+
+test('share_file reads outside the project only for local apps', async () => {
+  const { room, members: [claude] } = await setup('Claude');
+  const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'crewroom-o-')), 'syserr.txt');
+  fs.writeFileSync(outside, 'boom');
+  await assert.rejects(room.call('share_file', claude, { path: outside }), /outside|project/i);
+  const r = await room.call('share_file', claude, { path: outside, allowOutside: true, message: false });
+  assert.equal(r.asset.name, 'syserr.txt');
 });

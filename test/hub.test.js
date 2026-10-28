@@ -364,3 +364,13 @@ test('an app that lost its connection is reconnected as the same member without 
   assert.match((await c.callTool({ name: 'room_status', arguments: {} })).content[0].text, /Not joined/);
   for (const x of [a, b, c]) await x.close();
 });
+
+test('an MCP join on this computer also saves the identity for terminal commands', async () => {
+  const { client, call, json } = await mcpClient(`${hub.localBase}/r/${room.code}/mcp`);
+  const joined = json(await call('join_room', { name: 'Termy' }));
+  const file = path.join(hub.home, 'agents', room.code, 'termy.json');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, joined.your_token);
+  const now = await call('room_status', { scope: 'me' });
+  assert.match(now.content[0].text, /"you":"Termy"/);
+  await client.close();
+});

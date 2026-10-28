@@ -436,10 +436,10 @@ export class Hub {
         // "Seen by" and reaction changes on messages the dashboard already has: only what changed.
         const meta = {};
         for (const m of room.s.messages.slice(-500)) {
-          const sig = m.seenBy?.length || m.reactions ? `${m.seenBy?.length || 0}|${JSON.stringify(m.reactions || {})}` : '';
+          const sig = m.seenBy?.length || m.reactions || m.deleted ? `${m.seenBy?.length || 0}|${JSON.stringify(m.reactions || {})}|${m.deleted ? 1 : 0}` : '';
           if (sig === (seenSent.get(m.seq) || '')) continue;
           seenSent.set(m.seq, sig);
-          if (m.seq <= lastSeq && !reset) meta[m.seq] = { seenBy: room.seenNames(m) || null, reactions: room.reactionNames(m) || null };
+          if (m.seq <= lastSeq && !reset) meta[m.seq] = { seenBy: room.seenNames(m) || null, reactions: room.reactionNames(m) || null, deleted: m.deleted || undefined };
         }
         if (messages.length) lastSeq = messages[messages.length - 1].seq;
         else if (reset) lastSeq = room.s.seq;
@@ -478,7 +478,7 @@ export class Hub {
       const name = url.searchParams.get('name') || 'upload';
       const result = await room.call('share_file', HUMAN, {
         base64: buffer.toString('base64'), name, mime: req.headers['content-type'],
-        message: url.searchParams.get('message') || `Shared ${name}`, to: url.searchParams.get('to') || undefined,
+        message: url.searchParams.get('silent') ? false : url.searchParams.get('message') || `Shared ${name}`, to: url.searchParams.get('to') || undefined,
       });
       return sendJson(res, 200, result);
     }
@@ -497,6 +497,8 @@ export class Hub {
       const auth = req.headers.authorization || '';
       const tok = auth.startsWith('Bearer ') ? auth.slice(7).trim() : args.token;
       delete args.token;
+      delete args.allowOutside;
+      if (action === 'share_file' && local) args.allowOutside = true; // only for apps on this computer
       if (req.headers['x-admin-key']) {
         if (!isAdmin(req.headers['x-admin-key'])) throw new RoomError('Wrong dashboard key.', 403);
         return sendJson(res, 200, await room.call(action, HUMAN, args));
